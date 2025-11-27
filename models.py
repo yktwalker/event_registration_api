@@ -1,138 +1,129 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, UniqueConstraint, Enum
-from sqlalchemy.orm import relationship
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, func
+from sqlalchemy.orm import relationship, Mapped, mapped_column
 from datetime import datetime
-import enum
+from enum import Enum 
 
 # Импортируем Base из database.py
-from database import Base 
+from database import Base
 
-# --- Новое: Enum для ролей системных пользователей ---
-class SystemUserRole(enum.Enum):
-    """Определяет роли для сотрудников системы."""
-    ADMIN = "admin"
-    REGISTRAR = "registrar"
-
-# ----------------------------------------------------
-# 1. PARTICIPANT (Ранее User) - Участник мероприятия
-# ----------------------------------------------------
-class Participant(Base):
-    """
-    Модель для участника мероприятия (того, кто регистрируется).
-    Ранее называлась User.
-    """
-    __tablename__ = "participants"
-
-    id = Column(Integer, primary_key=True, index=True)
-    full_name = Column(String, index=True)
-    email = Column(String, unique=True, index=True)
-    phone = Column(String, nullable=True)
-    note = Column(String, nullable=True)
-
-    # Отношение к регистрации
-    registrations = relationship("Registration", back_populates="participant")
-    
-    # Отношение к членству в справочниках
-    directory_memberships = relationship("DirectoryMembership", back_populates="participant")
-
-    # Уникальность по ФИО и Примечанию (для идентификации похожих людей)
-    __table_args__ = (
-        UniqueConstraint('full_name', 'note', name='uc_full_name_note'),
-    )
+# --- Перечисление ролей пользователя ---
+class SystemUserRole(str, Enum):
+    ADMIN = "Admin"
+    REGISTRAR = "Registrar"
+    PARTICIPANT = "Participant"
 
 # ----------------------------------------------------
-# 2. SYSTEM USER - Администраторы и Регистраторы
-# ----------------------------------------------------
+# --- Модель системного пользователя (для RBAC/Аутентификации) ---
 class SystemUser(Base):
-    """
-    Модель для системных пользователей (Администраторы и Регистраторы).
-    """
     __tablename__ = "system_users"
 
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True)
-    full_name = Column(String)
-    # Используем Enum для ролей
-    role = Column(Enum(SystemUserRole), default=SystemUserRole.REGISTRAR, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    username: Mapped[str] = mapped_column(String, unique=True, index=True)
     
-    # Пока не добавляем пароль, но его нужно будет добавить для реальной системы
-    # hashed_password = Column(String) 
+    # 'Admin', 'Registrar'
+    role: Mapped[str] = mapped_column(String) 
+    
+    # Добавлено для JWT: Хешированный пароль
+    hashed_password: Mapped[str] = mapped_column(String)
+    
+    # Опциональное поле для полного имени, используется в schemas
+    full_name: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    # Обратное отношение к регистрации (те, кого зарегистрировал этот сотрудник)
-    registrations_made = relationship("Registration", back_populates="registered_by")
-
-
-# ----------------------------------------------------
-# 3. EVENT - Мероприятие
-# ----------------------------------------------------
+# --- Модель события ---
 class Event(Base):
-    """Модель для мероприятия."""
     __tablename__ = "events"
 
-    id = Column(Integer, primary_key=True, index=True)
-    title = Column(String, index=True)
-    description = Column(String, nullable=True)
-    event_date = Column(DateTime)
-    registration_active = Column(Boolean, default=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    title: Mapped[str] = mapped_column(String, index=True)
+    event_date: Mapped[datetime] = mapped_column(DateTime)
+    registration_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    max_participants: Mapped[int] = mapped_column(Integer, default=None, nullable=True)
 
-    # Отношение к регистрации
-    registrations = relationship("Registration", back_populates="event")
-
-# ----------------------------------------------------
-# 4. DIRECTORY - Справочник (Группы участников)
-# ----------------------------------------------------
-class Directory(Base):
-    """
-    Справочник или группа участников (например, "Анабарский улус").
-    """
-    __tablename__ = "directories"
-
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True)
-    description = Column(String, nullable=True)
-
-    memberships = relationship("DirectoryMembership", back_populates="directory")
-
-# ----------------------------------------------------
-# 5. DIRECTORY MEMBERSHIP - Связь Участник <-> Справочник
-# ----------------------------------------------------
-class DirectoryMembership(Base):
-    """
-    Модель связи многие-ко-многим: Участник в Справочнике.
-    """
-    __tablename__ = "directory_memberships"
-
-    participant_id = Column(Integer, ForeignKey("participants.id"), primary_key=True)
-    directory_id = Column(Integer, ForeignKey("directories.id"), primary_key=True)
+    # Связь с участниками
+    participants: Mapped[list["Participant"]] = relationship(
+        "Participant",
+        back_populates="event",
+        cascade="all, delete-orphan"
+    )
     
-    # Уникальность по паре (participant_id, directory_id) обеспечивается первичным ключом
+    # Связь с логами
+    logs: Mapped[list["AuditLog"]] = relationship(
+        "AuditLog",
+        back_populates="event",
+        cascade="all, delete-orphan"
+    )
 
-    participant = relationship("Participant", back_populates="directory_memberships")
-    directory = relationship("Directory", back_populates="memberships")
+# --- Модель участника ---
+class Participant(Base):
+    __tablename__ = "participants"
 
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    event_id: Mapped[int] = mapped_column(Integer, ForeignKey("events.id"), index=True)
+    full_name: Mapped[str] = mapped_column(String)
+    email: Mapped[str] = mapped_column(String, index=True)
+    phone: Mapped[str | None] = mapped_column(String, nullable=True)
+    registration_date: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_checked_in: Mapped[bool] = mapped_column(Boolean, default=False)
 
-# ----------------------------------------------------
-# 6. REGISTRATION - Регистрация участника на мероприятие
-# ----------------------------------------------------
+    event: Mapped["Event"] = relationship("Event", back_populates="participants")
+    
+    directory_memberships: Mapped[list["DirectoryMembership"]] = relationship(
+        "DirectoryMembership",
+        back_populates="participant",
+        cascade="all, delete-orphan"
+    )
+
+# --- Модель регистрации (Registration) ---
 class Registration(Base):
-    """Модель для регистрации участника на мероприятие."""
     __tablename__ = "registrations"
 
-    id = Column(Integer, primary_key=True, index=True)
-    event_id = Column(Integer, ForeignKey("events.id"), index=True)
-    participant_id = Column(Integer, ForeignKey("participants.id"), index=True) # Использование participant_id
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    event_id: Mapped[int] = mapped_column(Integer, ForeignKey("events.id"))
+    participant_id: Mapped[int] = mapped_column(Integer, ForeignKey("participants.id"))
+    registered_by_user_id: Mapped[int] = mapped_column(Integer, ForeignKey("system_users.id"))
     
-    # Новое поле: ID системного пользователя, который провел регистрацию
-    registered_by_user_id = Column(Integer, ForeignKey("system_users.id"), index=True, nullable=False) 
+    registration_time: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    arrival_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    registration_time = Column(DateTime, default=datetime.now)
-    arrival_time = Column(DateTime, nullable=True)
+    event: Mapped["Event"] = relationship("Event")
+    participant: Mapped["Participant"] = relationship("Participant")
+    registered_by: Mapped["SystemUser"] = relationship("SystemUser")
 
-    # Отношения
-    event = relationship("Event", back_populates="registrations")
-    participant = relationship("Participant", back_populates="registrations")
-    # Отношение к сотруднику, который зарегистрировал
-    registered_by = relationship("SystemUser", back_populates="registrations_made") 
+# --- Модель Журнала действий (Audit Log) ---
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
 
-    __table_args__ = (
-        UniqueConstraint('event_id', 'participant_id', name='uc_event_participant'),
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    event_id: Mapped[int] = mapped_column(Integer, ForeignKey("events.id"), index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    action: Mapped[str] = mapped_column(String) 
+    user_id: Mapped[int] = mapped_column(Integer) 
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    event: Mapped["Event"] = relationship("Event", back_populates="logs")
+
+# --- Модель Справочника (Directory) ---
+class Directory(Base):
+    __tablename__ = "directories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String, unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    memberships: Mapped[list["DirectoryMembership"]] = relationship(
+        "DirectoryMembership",
+        back_populates="directory",
+        cascade="all, delete-orphan"
     )
+
+# --- Модель Членства в Справочнике ---
+class DirectoryMembership(Base):
+    __tablename__ = "directory_memberships"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    directory_id: Mapped[int] = mapped_column(Integer, ForeignKey("directories.id"))
+    participant_id: Mapped[int] = mapped_column(Integer, ForeignKey("participants.id"))
+
+    directory: Mapped["Directory"] = relationship("Directory", back_populates="memberships")
+    participant: Mapped["Participant"] = relationship("Participant", back_populates="directory_memberships")

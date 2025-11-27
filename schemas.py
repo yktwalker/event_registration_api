@@ -1,30 +1,36 @@
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from datetime import datetime
-from models import SystemUserRole # Импортируем Enum для ролей из models
+from models import SystemUserRole
+
+# --- СХЕМЫ ТОКЕНОВ (JWT) ---
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    username: Optional[str] = None
 
 # --- СХЕМЫ СИСТЕМНЫХ ПОЛЬЗОВАТЕЛЕЙ (Admin/Registrar) ---
+
 class SystemUserBase(BaseModel):
     """Базовая схема для системного пользователя."""
     username: str
     full_name: str
-    # Позволяем задать роль при создании, по умолчанию Registrar
     role: SystemUserRole = SystemUserRole.REGISTRAR
 
 class SystemUserCreate(SystemUserBase):
     """Схема для создания нового системного пользователя."""
-    # В идеале, здесь также должно быть поле 'password: str'
-    pass
+    password: str  # Пароль теперь обязателен
 
 class SystemUserRead(SystemUserBase):
     """Схема для чтения системного пользователя."""
     id: int
-    
     class Config:
-        # Позволяет Pydantic читать данные из ORM-моделей (например, SystemUser)
         from_attributes = True
 
 # --- СХЕМЫ УЧАСТНИКОВ (Participant) ---
+
 class ParticipantBase(BaseModel):
     """Базовая схема для участника."""
     full_name: str
@@ -39,11 +45,11 @@ class ParticipantCreate(ParticipantBase):
 class ParticipantRead(ParticipantBase):
     """Схема для чтения участника."""
     id: int
-    
     class Config:
         from_attributes = True
 
 # --- СХЕМЫ МЕРОПРИЯТИЙ (Event) ---
+
 class EventBase(BaseModel):
     """Базовая схема для мероприятия."""
     title: str
@@ -58,11 +64,11 @@ class EventCreate(EventBase):
 class EventRead(EventBase):
     """Схема для чтения мероприятия."""
     id: int
-    
     class Config:
         from_attributes = True
 
 # --- СХЕМЫ СПРАВОЧНИКОВ (Directory) ---
+
 class DirectoryBase(BaseModel):
     """Базовая схема для справочника/группы."""
     name: str
@@ -75,7 +81,6 @@ class DirectoryCreate(DirectoryBase):
 class DirectoryRead(DirectoryBase):
     """Схема для чтения справочника."""
     id: int
-    
     class Config:
         from_attributes = True
 
@@ -83,16 +88,15 @@ class DirectoryMembershipCreate(BaseModel):
     """Схема для добавления участника в справочник."""
     participant_id: int
     directory_id: int
-    
     class Config:
         from_attributes = True
 
 # --- СХЕМЫ РЕГИСТРАЦИИ (Registration) ---
+
 class RegistrationBase(BaseModel):
     """Базовая схема для регистрации."""
     participant_id: int
-    # ID сотрудника, который проводит регистрацию.
-    registered_by_user_id: int 
+    registered_by_user_id: int
 
 class RegistrationCreate(RegistrationBase):
     """Схема для создания регистрации (используется в теле запроса)."""
@@ -104,21 +108,18 @@ class RegistrationRead(RegistrationBase):
     event_id: int
     registration_time: datetime
     arrival_time: Optional[datetime] = None
-    
     # Добавляем связанные данные о регистраторе
-    registered_by: Optional[SystemUserRead] = None 
-
+    registered_by: Optional[SystemUserRead] = None
     class Config:
         from_attributes = True
 
 # --- СХЕМЫ СТАТУСА УЧАСТНИКА ---
+
 class ParticipantStatus(ParticipantRead):
     """Схема для вывода списка участников с их статусом явки."""
     arrival_time: Optional[datetime] = None
-    
     # Информация о сотруднике, который зарегистрировал участника
     registered_by_full_name: str
     registered_by_role: SystemUserRole
-    
     class Config:
         from_attributes = True
