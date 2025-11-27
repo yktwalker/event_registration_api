@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  db:
+    # Используем официальный образ PostgreSQL
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: user_event
+      POSTGRES_PASSWORD: strongpassword
+      POSTGRES_DB: event_db
+    # Открываем порт 5432, если нужно подключаться с хоста (Windows)
+    ports:
+      - "5432:5432"
+    volumes:
+      # Сохраняем данные БД между перезапусками контейнера
+      - postgres_data:/var/lib/postgresql/data/
+
+  app:
+    # Указываем, что нужно собрать образ из Dockerfile в текущей директории
+    build: . 
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      # Монтируем локальный код, чтобы uvicorn --reload работал
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      # Строка подключения к базе данных (имя сервиса 'db' становится hostname)
+      DATABASE_URL: postgresql+asyncpg://user_event:strongpassword@db/event_db
+    depends_on:
+      - db
+      
+volumes:
+  postgres_data:
+
