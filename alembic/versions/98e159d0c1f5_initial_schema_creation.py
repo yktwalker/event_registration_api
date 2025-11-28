@@ -1,8 +1,8 @@
 """Initial schema creation
 
-Revision ID: 58cb1b04263b
+Revision ID: 98e159d0c1f5
 Revises: 
-Create Date: 2025-11-28 12:02:19.474220
+Create Date: 2025-11-28 17:26:10.129227
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '58cb1b04263b'
+revision: str = '98e159d0c1f5'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -45,6 +45,7 @@ def upgrade() -> None:
     sa.Column('role', sa.String(), nullable=False),
     sa.Column('hashed_password', sa.String(), nullable=False),
     sa.Column('full_name', sa.String(), nullable=True),
+    sa.Column('last_sync_time', sa.DateTime(), nullable=True),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_system_users_id'), 'system_users', ['id'], unique=False)

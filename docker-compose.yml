@@ -18,7 +18,7 @@ services:
 
   app:
     # Указываем, что нужно собрать образ из Dockerfile в текущей директории
-    build: . 
+    build: .
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       # Монтируем локальный код, чтобы uvicorn --reload работал
@@ -28,9 +28,10 @@ services:
     environment:
       # Строка подключения к базе данных (имя сервиса 'db' становится hostname)
       DATABASE_URL: postgresql+asyncpg://user_event:strongpassword@db/event_db
+      # Секретный ключ для токенов
+      SECRET_KEY: "SUPER_SECURE_PRODUCTION_KEY_CHANGE_THIS_IN_PROD"
     depends_on:
       - db
-      
+
 volumes:
   postgres_data:
-

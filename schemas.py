@@ -1,7 +1,6 @@
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from datetime import datetime
-
 from models import SystemUserRole
 
 
@@ -26,6 +25,7 @@ class SystemUserCreate(SystemUserBase):
 
 class SystemUserRead(SystemUserBase):
     id: int
+    last_sync_time: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -118,3 +118,13 @@ class ParticipantStatus(ParticipantRead):
 
     class Config:
         from_attributes = True
+
+# --- Новые схемы для синхронизации ---
+
+class SyncRequest(BaseModel):
+    last_sync_time: Optional[datetime] = None
+    known_registration_ids: Optional[List[int]] = None
+
+class SyncResponse(BaseModel):
+    new_registrations: List[RegistrationRead]
+    server_time: datetime

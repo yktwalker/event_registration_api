@@ -2,15 +2,12 @@ from sqlalchemy import Integer, String, Boolean, DateTime, ForeignKey, Text, fun
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from datetime import datetime
 from enum import Enum
-
 from database import Base
-
 
 class SystemUserRole(str, Enum):
     ADMIN = "Admin"
     REGISTRAR = "Registrar"
     PARTICIPANT = "Participant"
-
 
 class SystemUser(Base):
     __tablename__ = "system_users"
@@ -20,7 +17,8 @@ class SystemUser(Base):
     role: Mapped[str] = mapped_column(String)
     hashed_password: Mapped[str] = mapped_column(String)
     full_name: Mapped[str | None] = mapped_column(String, nullable=True)
-
+    # Новое поле для синхронизации
+    last_sync_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 class Event(Base):
     __tablename__ = "events"
@@ -36,13 +34,11 @@ class Event(Base):
         back_populates="event",
         cascade="all, delete-orphan",
     )
-
     logs: Mapped[list["AuditLog"]] = relationship(
         "AuditLog",
         back_populates="event",
         cascade="all, delete-orphan",
     )
-
 
 class Participant(Base):
     __tablename__ = "participants"
@@ -57,13 +53,11 @@ class Participant(Base):
     is_checked_in: Mapped[bool] = mapped_column(Boolean, default=False)
 
     event: Mapped["Event"] = relationship("Event", back_populates="participants")
-
     directory_memberships: Mapped[list["DirectoryMembership"]] = relationship(
         "DirectoryMembership",
         back_populates="participant",
         cascade="all, delete-orphan",
     )
-
 
 class Registration(Base):
     __tablename__ = "registrations"
@@ -79,7 +73,6 @@ class Registration(Base):
     participant: Mapped["Participant"] = relationship("Participant")
     registered_by: Mapped["SystemUser"] = relationship("SystemUser")
 
-
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
@@ -91,7 +84,6 @@ class AuditLog(Base):
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     event: Mapped["Event"] = relationship("Event", back_populates="logs")
-
 
 class Directory(Base):
     __tablename__ = "directories"
@@ -105,7 +97,6 @@ class Directory(Base):
         back_populates="directory",
         cascade="all, delete-orphan",
     )
-
 
 class DirectoryMembership(Base):
     __tablename__ = "directory_memberships"
