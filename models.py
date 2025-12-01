@@ -6,6 +6,7 @@ from database import Base
 
 class SystemUserRole(str, Enum):
     ADMIN = "Admin"
+    OPERATOR = "Operator"    # <--- Добавлено
     REGISTRAR = "Registrar"
     PARTICIPANT = "Participant"
 
@@ -24,10 +25,7 @@ class Event(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     title: Mapped[str] = mapped_column(String, index=True)
-    
-    # <--- НОВОЕ ПОЛЕ: добавлено, чтобы соответствовать схеме Pydantic и тестам
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-
     event_date: Mapped[datetime] = mapped_column(DateTime)
     registration_active: Mapped[bool] = mapped_column(Boolean, default=True)
     max_participants: Mapped[int | None] = mapped_column(Integer, default=None, nullable=True)
@@ -37,7 +35,6 @@ class Event(Base):
         back_populates="event",
         cascade="all, delete-orphan",
     )
-    
     logs: Mapped[list["AuditLog"]] = relationship(
         "AuditLog",
         back_populates="event",
@@ -50,17 +47,16 @@ class Participant(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     # Поле event_id может быть Null, так как участник может существовать глобально
     event_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("events.id"), index=True, nullable=True)
-    
     full_name: Mapped[str] = mapped_column(String)
     email: Mapped[str] = mapped_column(String, index=True)
     phone: Mapped[str | None] = mapped_column(String, nullable=True)
-    
     registration_date: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    
     is_checked_in: Mapped[bool] = mapped_column(Boolean, default=False)
 
     event: Mapped["Event | None"] = relationship("Event", back_populates="participants")
-
+    
     directory_memberships: Mapped[list["DirectoryMembership"]] = relationship(
         "DirectoryMembership",
         back_populates="participant",

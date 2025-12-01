@@ -12,18 +12,22 @@ class TokenData(BaseModel):
 
 class SystemUserBase(BaseModel):
     username: str
-    # Fix: поле опциональное, чтобы соответствовать nullable=True в БД
     full_name: Optional[str] = None
     role: SystemUserRole = SystemUserRole.REGISTRAR
 
 class SystemUserCreate(SystemUserBase):
     password: str
 
+class SystemUserUpdate(BaseModel):
+    """Схема для обновления данных пользователя (для Админа)."""
+    full_name: Optional[str] = None
+    role: Optional[SystemUserRole] = None
+    password: Optional[str] = None
+
 class SystemUserRead(SystemUserBase):
     id: int
     last_sync_time: Optional[datetime] = None
     
-    # Pydantic V2 style
     model_config = ConfigDict(from_attributes=True)
 
 class ParticipantBase(BaseModel):
@@ -37,7 +41,6 @@ class ParticipantCreate(ParticipantBase):
 
 class ParticipantRead(ParticipantBase):
     id: int
-    
     model_config = ConfigDict(from_attributes=True)
 
 class EventBase(BaseModel):
@@ -51,7 +54,6 @@ class EventCreate(EventBase):
 
 class EventRead(EventBase):
     id: int
-    
     model_config = ConfigDict(from_attributes=True)
 
 class DirectoryBase(BaseModel):
@@ -63,13 +65,11 @@ class DirectoryCreate(DirectoryBase):
 
 class DirectoryRead(DirectoryBase):
     id: int
-    
     model_config = ConfigDict(from_attributes=True)
 
 class DirectoryMembershipCreate(BaseModel):
     participant_id: int
     directory_id: int
-    
     model_config = ConfigDict(from_attributes=True)
 
 class RegistrationBase(BaseModel):
@@ -95,7 +95,7 @@ class ParticipantStatus(ParticipantRead):
     
     model_config = ConfigDict(from_attributes=True)
 
-# --- Новые схемы для синхронизации ---
+# --- Схемы для синхронизации ---
 
 class SyncRequest(BaseModel):
     last_sync_time: Optional[datetime] = None
