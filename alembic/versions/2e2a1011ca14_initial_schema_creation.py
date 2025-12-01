@@ -1,8 +1,8 @@
 """Initial schema creation
 
-Revision ID: 98e159d0c1f5
+Revision ID: 2e2a1011ca14
 Revises: 
-Create Date: 2025-11-28 17:26:10.129227
+Create Date: 2025-12-01 10:07:38.236925
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '98e159d0c1f5'
+revision: str = '2e2a1011ca14'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -32,6 +32,7 @@ def upgrade() -> None:
     op.create_table('events',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('title', sa.String(), nullable=False),
+    sa.Column('description', sa.Text(), nullable=True),
     sa.Column('event_date', sa.DateTime(), nullable=False),
     sa.Column('registration_active', sa.Boolean(), nullable=False),
     sa.Column('max_participants', sa.Integer(), nullable=True),
@@ -64,7 +65,7 @@ def upgrade() -> None:
     op.create_index(op.f('ix_audit_logs_id'), 'audit_logs', ['id'], unique=False)
     op.create_table('participants',
     sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('event_id', sa.Integer(), nullable=False),
+    sa.Column('event_id', sa.Integer(), nullable=True),
     sa.Column('full_name', sa.String(), nullable=False),
     sa.Column('email', sa.String(), nullable=False),
     sa.Column('phone', sa.String(), nullable=True),

@@ -1,0 +1,6 @@
+pytest
+pytest-asyncio
+httpx
+aiosqlite
+requests
+websockets

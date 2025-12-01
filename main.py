@@ -1,34 +1,29 @@
 import os
-from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Set
 import json
+from datetime import datetime, timedelta, timezone, UTC
+from typing import List, Optional, Set
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Depends, Body, Query, status, WebSocket, WebSocketDisconnect
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, joinedload
 from sqlalchemy.future import select
 from sqlalchemy import and_, or_
 
-import models, schemas
+import models
+import schemas
 from database import get_db, init_db, AsyncSessionLocal, get_password_hash
 
-# ИСПРАВЛЕНИЕ 1: Ключ из переменных окружения
+# --- Конфигурация ---
 SECRET_KEY = os.getenv("SECRET_KEY", "MY_SUPER_SECRET_DEV_KEY_CHANGE_ME")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-app = FastAPI(
-    title="Event Registration API (Hybrid)",
-    description="API с JWT, RBAC и гибридной синхронизацией (WebSocket + REST)",
-    version="7.0.0",
-)
 
 # --- WebSocket Connection Manager ---
 class ConnectionManager:
@@ -57,21 +52,33 @@ class ConnectionManager:
                     pass
 
 manager = ConnectionManager()
-# -------------------------------------
 
+# --- Lifespan (вместо startup event) ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Логика запуска
+    async with AsyncSessionLocal() as session:
+        await init_db(session)
+    
+    yield
+    # Логика завершения (если нужна)
+
+app = FastAPI(
+    title="Event Registration API (Hybrid)",
+    description="API с JWT, RBAC и гибридной синхронизацией (WebSocket + REST)",
+    version="7.0.0",
+    lifespan=lifespan 
+)
+
+# --- Auth Helpers ---
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=15))
+    expire = datetime.now(UTC) + (expires_delta or timedelta(minutes=15))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    async with AsyncSessionLocal() as session:
-        await init_db(session)
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
@@ -84,12 +91,13 @@ async def get_current_user(
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username = payload.get("sub")
+        username: str = payload.get("sub")
         if username is None:
             raise credentials_exception
         token_data = schemas.TokenData(username=username)
     except JWTError:
         raise credentials_exception
+    
     stmt = select(models.SystemUser).filter(models.SystemUser.username == token_data.username)
     result = await db.execute(stmt)
     user = result.scalars().first()
@@ -111,6 +119,8 @@ async def get_current_registrar_or_admin(
         raise HTTPException(status_code=403, detail="Недостаточно прав.")
     return current_user
 
+# --- Endpoints ---
+
 @app.post("/token", response_model=schemas.Token)
 async def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
@@ -119,12 +129,14 @@ async def login_for_access_token(
     stmt = select(models.SystemUser).filter(models.SystemUser.username == form_data.username)
     result = await db.execute(stmt)
     user = result.scalars().first()
+    
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.username, "role": user.role},
@@ -142,6 +154,7 @@ async def create_system_user(
     result = await db.execute(stmt)
     if result.scalars().first():
         raise HTTPException(status_code=400, detail="Пользователь с таким именем уже существует.")
+    
     hashed_pwd = get_password_hash(user.password)
     db_user = models.SystemUser(
         username=user.username,
@@ -190,19 +203,23 @@ async def create_event(
     stmt_active = select(models.Event).filter(models.Event.registration_active == True)
     result_active = await db.execute(stmt_active)
     existing_active = result_active.scalars().first()
-
+    
     if existing_active:
         raise HTTPException(
-            status_code=400,
+            status_code=400, 
             detail=f"Уже существует активное мероприятие (id={existing_active.id}, title='{existing_active.title}'). "
-                   f"Сначала деактивируйте его.",
+                   f"Сначала деактивируйте его."
         )
+    
+    event_data = event.model_dump()
+    
+    # Если description вдруг нет в модели (но вы добавили), это защита
+    if not hasattr(models.Event, "description") and "description" in event_data:
+        del event_data["description"]
 
-    event_data = event.dict()
-    # ИСПРАВЛЕНИЕ: Защита от таймзон
     if event_data.get("event_date") and event_data["event_date"].tzinfo is not None:
         event_data["event_date"] = event_data["event_date"].replace(tzinfo=None)
-
+        
     db_event = models.Event(**event_data)
     db.add(db_event)
     await db.commit()
@@ -218,13 +235,14 @@ async def get_event(event_id: int, db: AsyncSession = Depends(get_db)):
 
 @app.delete("/events/{event_id}", status_code=204)
 async def delete_event(
-    event_id: int,
+    event_id: int, 
     db: AsyncSession = Depends(get_db),
     admin_user: models.SystemUser = Depends(get_current_admin),
 ):
     event = await db.get(models.Event, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Мероприятие не найдено")
+    
     await db.delete(event)
     await db.commit()
     return None
@@ -243,7 +261,7 @@ async def create_participant(
     if result.scalars().first():
         raise HTTPException(status_code=400, detail="Участник уже существует.")
     
-    db_participant = models.Participant(**participant.dict())
+    db_participant = models.Participant(**participant.model_dump())
     db.add(db_participant)
     await db.commit()
     await db.refresh(db_participant)
@@ -256,6 +274,7 @@ async def bulk_create_participants(
     admin_user: models.SystemUser = Depends(get_current_admin),
 ):
     new_participants: list[models.Participant] = []
+    
     for participant_data in participants:
         stmt = select(models.Participant).filter(
             models.Participant.full_name == participant_data.full_name,
@@ -264,14 +283,15 @@ async def bulk_create_participants(
         result = await db.execute(stmt)
         if result.scalars().first():
             continue
-        
-        db_participant = models.Participant(**participant_data.dict())
+            
+        db_participant = models.Participant(**participant_data.model_dump())
         db.add(db_participant)
         new_participants.append(db_participant)
     
     await db.commit()
     for p in new_participants:
         await db.refresh(p)
+        
     return new_participants
 
 @app.get("/participants/", response_model=List[schemas.ParticipantRead])
@@ -294,10 +314,11 @@ async def search_participants(
 ):
     search_pattern = f"%{query}%"
     stmt = select(models.Participant).filter(
-        (models.Participant.full_name.ilike(search_pattern))
-        | (models.Participant.email.ilike(search_pattern))
-        | (models.Participant.note.ilike(search_pattern))
+        (models.Participant.full_name.ilike(search_pattern)) | 
+        (models.Participant.email.ilike(search_pattern)) |
+        (models.Participant.note.ilike(search_pattern))
     ).limit(limit)
+    
     result = await db.execute(stmt)
     return result.scalars().all()
 
@@ -310,6 +331,7 @@ async def delete_participant(
     participant = await db.get(models.Participant, participant_id)
     if not participant:
         raise HTTPException(status_code=404, detail="Участник не найден")
+    
     await db.delete(participant)
     await db.commit()
     return None
@@ -320,7 +342,7 @@ async def create_directory(
     db: AsyncSession = Depends(get_db),
     admin_user: models.SystemUser = Depends(get_current_admin),
 ):
-    db_directory = models.Directory(**directory.dict())
+    db_directory = models.Directory(**directory.model_dump())
     db.add(db_directory)
     await db.commit()
     await db.refresh(db_directory)
@@ -344,6 +366,7 @@ async def delete_directory(
     directory = await db.get(models.Directory, directory_id)
     if not directory:
         raise HTTPException(status_code=404, detail="Справочник не найден")
+    
     await db.delete(directory)
     await db.commit()
     return None
@@ -358,13 +381,14 @@ async def add_member_to_directory(
         raise HTTPException(status_code=404, detail="Участник не найден.")
     if not await db.get(models.Directory, membership.directory_id):
         raise HTTPException(status_code=404, detail="Справочник не найден.")
-    
-    db_membership = models.DirectoryMembership(**membership.dict())
+        
+    db_membership = models.DirectoryMembership(**membership.model_dump())
     try:
         db.add(db_membership)
         await db.commit()
     except Exception:
         raise HTTPException(status_code=400, detail="Участник уже состоит в этом справочнике.")
+        
     return membership
 
 @app.delete("/directories/{directory_id}/members/{participant_id}", status_code=204)
@@ -380,9 +404,10 @@ async def remove_member_from_directory(
     )
     result = await db.execute(stmt)
     membership = result.scalars().first()
+    
     if not membership:
         raise HTTPException(status_code=404, detail="Участник не найден в этом справочнике")
-    
+        
     await db.delete(membership)
     await db.commit()
     return None
@@ -397,23 +422,24 @@ async def list_directory_members(
 ):
     if not await db.get(models.Directory, directory_id):
         raise HTTPException(status_code=404, detail="Справочник не найден.")
-    
+        
     stmt = select(models.Participant).join(
         models.DirectoryMembership,
         models.Participant.id == models.DirectoryMembership.participant_id,
     ).filter(models.DirectoryMembership.directory_id == directory_id)
-
+    
     if query:
         search_pattern = f"%{query}%"
         stmt = stmt.filter(
-            (models.Participant.full_name.ilike(search_pattern))
-            | (models.Participant.email.ilike(search_pattern))
-            | (models.Participant.note.ilike(search_pattern))
+            (models.Participant.full_name.ilike(search_pattern)) | 
+            (models.Participant.email.ilike(search_pattern)) |
+            (models.Participant.note.ilike(search_pattern))
         )
-    
+        
     stmt = stmt.limit(limit)
     result = await db.execute(stmt)
     return result.scalars().all()
+
 
 # --- WebSocket Endpoint ---
 @app.websocket("/ws/events/{event_id}")
@@ -425,7 +451,7 @@ async def websocket_endpoint(websocket: WebSocket, event_id: int):
     try:
         while True:
             # Просто поддерживаем соединение, можно принимать пинги
-            await websocket.receive_text() 
+            await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket, event_id)
 
@@ -441,41 +467,42 @@ async def sync_registrations(
     Эндпоинт для синхронизации. Регистратор присылает время своей последней синхронизации
     и список ID, которые у него есть. Сервер отдает все новые записи.
     """
-    server_time = datetime.utcnow()
-
-    # ИСПРАВЛЕНИЕ: Используем selectinload и убираем двойной запрос
+    server_time = datetime.now(UTC)
+    
     stmt = (
         select(models.Registration)
-        .options(selectinload(models.Registration.registered_by))
+        .options(joinedload(models.Registration.registered_by)) # joinedload надежнее
         .filter(models.Registration.event_id == event_id)
     )
-
+    
     conditions = []
-
-    # Стратегия 1: Вернуть все, что новее last_sync_time
+    
     if sync_req.last_sync_time:
-        # ИСПРАВЛЕНИЕ: Приводим к наивному UTC, чтобы избежать конфликта типов
         last_sync = sync_req.last_sync_time
         if last_sync.tzinfo:
-             last_sync = last_sync.astimezone(timezone.utc).replace(tzinfo=None)
+            last_sync = last_sync.astimezone(timezone.utc).replace(tzinfo=None)
         conditions.append(models.Registration.registration_time > last_sync)
-    
-    # Стратегия 2: Если клиент передал known_registration_ids, исключить их
+        
     if sync_req.known_registration_ids:
         conditions.append(models.Registration.id.not_in(sync_req.known_registration_ids))
-    
+        
     if conditions:
-        stmt = stmt.filter(or_(*conditions))
-    
+        stmt = stmt.filter(and_(*conditions))
+        
     result = await db.execute(stmt)
-    registrations = result.scalars().all()
+    registrations_orm = result.scalars().all()
+    
+    # FIX: Конвертируем в Pydantic ДО коммита
+    registrations_pydantic = [
+        schemas.RegistrationRead.model_validate(reg) 
+        for reg in registrations_orm
+    ]
 
-    # Обновляем время синхронизации пользователя
     current_user.last_sync_time = server_time
     await db.commit()
-
+    
     return schemas.SyncResponse(
-        new_registrations=registrations,
+        new_registrations=registrations_pydantic,
         server_time=server_time
     )
 
@@ -487,18 +514,26 @@ async def register_users(
     db: AsyncSession = Depends(get_db),
     current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
 ):
-    registered_by_user_id = current_user.id
+    # 1. Читаем данные пользователя ДО коммита
+    reg_user_id = current_user.id
+    reg_username = current_user.username
+    reg_role = current_user.role
+    reg_fullname = current_user.full_name
+    
     event = await db.get(models.Event, event_id)
     if not event:
         raise HTTPException(status_code=404, detail=f"Мероприятие {event_id} не найдено.")
+    
     if not event.registration_active:
         raise HTTPException(status_code=403, detail="Регистрация закрыта.")
 
     target_participant_ids = set(participant_ids or [])
+
     if directory_id:
         directory = await db.get(models.Directory, directory_id)
         if not directory:
             raise HTTPException(status_code=404, detail=f"Справочник {directory_id} не найден.")
+        
         stmt_dir_members = select(models.DirectoryMembership.participant_id).filter(
             models.DirectoryMembership.directory_id == directory_id,
         )
@@ -514,39 +549,57 @@ async def register_users(
     )
     result_existing = await db.execute(stmt_existing)
     existing_ids = set(result_existing.scalars().all())
-    
+
     participants_to_register = target_participant_ids - existing_ids
-    successful_registrations: list[models.Registration] = []
     
+    successful_registrations: list[models.Registration] = []
+
     for p_id in participants_to_register:
         if not await db.get(models.Participant, p_id):
             continue
+            
         db_registration = models.Registration(
             event_id=event_id,
             participant_id=p_id,
-            registered_by_user_id=registered_by_user_id,
+            registered_by_user_id=reg_user_id, 
         )
         db.add(db_registration)
         successful_registrations.append(db_registration)
-    
+
     await db.commit()
     
+    # 2. Формируем ответ вручную, чтобы не зависеть от сессии
+    response_data = []
     for reg in successful_registrations:
-        await db.refresh(reg) 
-    
+        await db.refresh(reg)
+        response_data.append({
+            "id": reg.id,
+            "event_id": reg.event_id,
+            "participant_id": reg.participant_id,
+            "registered_by_user_id": reg.registered_by_user_id,
+            "registration_time": reg.registration_time,
+            "arrival_time": reg.arrival_time,
+            "registered_by": {
+                "id": reg_user_id,
+                "username": reg_username,
+                "full_name": reg_fullname,
+                "role": reg_role
+            }
+        })
+
     # --- Отправка уведомлений через WebSocket ---
     if successful_registrations:
         notify_data = {
             "type": "new_registrations",
-            "registrar_id": current_user.id,
-            "registrar_name": current_user.username,
+            "registrar_id": reg_user_id,
+            "registrar_name": reg_username,
             "ids": [r.id for r in successful_registrations],
             "participant_ids": [r.participant_id for r in successful_registrations]
         }
         await manager.broadcast(json.dumps(notify_data), event_id)
     # --------------------------------------------
 
-    return successful_registrations
+    return response_data
 
 @app.delete("/events/{event_id}/participants/{participant_id}", status_code=204)
 async def unregister_participant(
@@ -565,9 +618,7 @@ async def unregister_participant(
     if not registration:
         raise HTTPException(status_code=404, detail="Регистрация не найдена.")
     
-    # Сохраняем ID для уведомления об удалении
     reg_id = registration.id
-    
     await db.delete(registration)
     await db.commit()
     
@@ -578,7 +629,7 @@ async def unregister_participant(
         "participant_id": participant_id
     }
     await manager.broadcast(json.dumps(notify_data), event_id)
-
+    
     return None
 
 @app.get("/events/{event_id}/participants/", response_model=List[schemas.ParticipantStatus])
@@ -607,17 +658,18 @@ async def get_event_participants(
     if query:
         search_pattern = f"%{query}%"
         stmt = stmt.filter(
-            (models.Participant.full_name.ilike(search_pattern))
-            | (models.Participant.email.ilike(search_pattern))
-            | (models.Participant.note.ilike(search_pattern))
+            (models.Participant.full_name.ilike(search_pattern)) | 
+            (models.Participant.email.ilike(search_pattern)) |
+            (models.Participant.note.ilike(search_pattern))
         )
-    
+        
     stmt = stmt.limit(limit)
     result = await db.execute(stmt)
     
     participants_status: list[schemas.ParticipantStatus] = []
     for participant_orm, arrival_time, reg_full_name, reg_role in result.all():
-        participant_dict = schemas.ParticipantRead.from_orm(participant_orm).dict()
+        participant_dict = schemas.ParticipantRead.model_validate(participant_orm).model_dump()
+        
         participants_status.append(
             schemas.ParticipantStatus(
                 **participant_dict,
@@ -626,4 +678,5 @@ async def get_event_participants(
                 registered_by_role=reg_role,
             )
         )
+        
     return participants_status
