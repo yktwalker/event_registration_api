@@ -1,5 +1,5 @@
     # Используем официальный базовый образ Python для Debian
-    FROM python:3.11-slim-buster 
+    FROM python:3.11-slim-bookworm
 
     # Устанавливаем рабочую директорию
     WORKDIR /app
