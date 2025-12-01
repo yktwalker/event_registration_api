@@ -67,7 +67,8 @@ app = FastAPI(
     title="Event Registration API (Hybrid)",
     description="API с JWT, RBAC и гибридной синхронизацией (WebSocket + REST)",
     version="7.0.0",
-    lifespan=lifespan 
+    lifespan=lifespan,
+    root_path="/api"
 )
 
 # --- Auth Helpers ---
