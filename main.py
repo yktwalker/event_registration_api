@@ -68,7 +68,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Event Registration API (Hybrid)",
     description="API с JWT, RBAC и гибридной синхронизацией (WebSocket + REST)",
-    version="7.3.0",
+    version="7.5.0",
     lifespan=lifespan,
     root_path="/api"
 )
@@ -100,7 +100,7 @@ async def get_current_user(
         token_data = schemas.TokenData(username=username)
     except JWTError:
         raise credentials_exception
-    
+
     stmt = select(models.SystemUser).filter(models.SystemUser.username == token_data.username)
     result = await db.execute(stmt)
     user = result.scalars().first()
@@ -122,7 +122,7 @@ async def get_current_operator_or_admin(
     """Администратор или Оператор."""
     if current_user.role not in (models.SystemUserRole.ADMIN, models.SystemUserRole.OPERATOR):
         raise HTTPException(
-            status_code=403, 
+            status_code=403,
             detail="Недостаточно прав. Требуется роль Администратора или Оператора."
         )
     return current_user
@@ -146,7 +146,6 @@ async def login_for_access_token(
     stmt = select(models.SystemUser).filter(models.SystemUser.username == form_data.username)
     result = await db.execute(stmt)
     user = result.scalars().first()
-    
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -205,18 +204,16 @@ async def update_system_user(
     user = await db.get(models.SystemUser, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
-
+    
     if user_update.full_name is not None:
         user.full_name = user_update.full_name
-    
     if user_update.role is not None:
         if user.id == admin_user.id and user_update.role != models.SystemUserRole.ADMIN:
              raise HTTPException(status_code=400, detail="Нельзя снять права администратора с самого себя.")
         user.role = user_update.role
-
     if user_update.password is not None:
         user.hashed_password = get_password_hash(user_update.password)
-
+        
     await db.commit()
     await db.refresh(user)
     return user
@@ -229,11 +226,11 @@ async def delete_system_user(
 ):
     if user_id == admin_user.id:
         raise HTTPException(status_code=400, detail="Нельзя удалить самого себя.")
-
+        
     user = await db.get(models.SystemUser, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
-
+        
     await db.delete(user)
     await db.commit()
     return None
@@ -266,30 +263,72 @@ async def create_event(
     # Создание событий: Оператор или Админ
     current_user: models.SystemUser = Depends(get_current_operator_or_admin),
 ):
-    stmt_active = select(models.Event).filter(models.Event.registration_active == True)
-    result_active = await db.execute(stmt_active)
-    existing_active = result_active.scalars().first()
-
-    if existing_active:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Уже существует активное мероприятие (id={existing_active.id}, title='{existing_active.title}'). "
-                   f"Сначала деактивируйте его."
-        )
-
+    # ИСПРАВЛЕНИЕ: Проверяем конфликт только если новое событие хочет быть активным
+    if event.registration_active:
+        stmt_active = select(models.Event).filter(models.Event.registration_active == True)
+        result_active = await db.execute(stmt_active)
+        existing_active = result_active.scalars().first()
+        
+        if existing_active:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Уже существует активное мероприятие (id={existing_active.id}, title='{existing_active.title}'). "
+                       f"Сначала деактивируйте его."
+            )
+        
     event_data = event.model_dump()
     # Защита от лишних полей, если модель изменится
     if not hasattr(models.Event, "description") and "description" in event_data:
         del event_data["description"]
-    
+        
     if event_data.get("event_date") and event_data["event_date"].tzinfo is not None:
         event_data["event_date"] = event_data["event_date"].replace(tzinfo=None)
-
+        
     db_event = models.Event(**event_data)
     db.add(db_event)
     await db.commit()
     await db.refresh(db_event)
     return db_event
+
+@app.put("/events/{event_id}", response_model=schemas.EventRead)
+async def update_event(
+    event_id: int,
+    event_update: schemas.EventUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: models.SystemUser = Depends(get_current_operator_or_admin),
+):
+    event = await db.get(models.Event, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Мероприятие не найдено")
+
+    # Если пытаемся активировать мероприятие, проверяем, нет ли другого активного
+    if event_update.registration_active is True:
+        stmt_active = select(models.Event).filter(
+            models.Event.registration_active == True,
+            models.Event.id != event_id
+        )
+        result_active = await db.execute(stmt_active)
+        existing_active = result_active.scalars().first()
+        
+        if existing_active:
+             raise HTTPException(
+                status_code=400,
+                detail=f"Уже существует активное мероприятие (id={existing_active.id}). "
+                       f"Сначала деактивируйте его."
+            )
+
+    update_data = event_update.model_dump(exclude_unset=True)
+    
+    # Удаляем tzinfo из даты, если она передана
+    if "event_date" in update_data and update_data["event_date"] and update_data["event_date"].tzinfo is not None:
+        update_data["event_date"] = update_data["event_date"].replace(tzinfo=None)
+
+    for key, value in update_data.items():
+        setattr(event, key, value)
+
+    await db.commit()
+    await db.refresh(event)
+    return event
 
 @app.get("/events/{event_id}", response_model=schemas.EventRead)
 async def get_event(event_id: int, db: AsyncSession = Depends(get_db)):
@@ -308,7 +347,7 @@ async def delete_event(
     event = await db.get(models.Event, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Мероприятие не найдено")
-    
+        
     await db.delete(event)
     await db.commit()
     return None
@@ -329,7 +368,7 @@ async def create_participant(
     result = await db.execute(stmt)
     if result.scalars().first():
         raise HTTPException(status_code=400, detail="Участник уже существует.")
-
+        
     db_participant = models.Participant(**participant.model_dump())
     db.add(db_participant)
     await db.commit()
@@ -352,7 +391,7 @@ async def bulk_create_participants(
         result = await db.execute(stmt)
         if result.scalars().first():
             continue
-        
+            
         db_participant = models.Participant(**participant_data.model_dump())
         db.add(db_participant)
         new_participants.append(db_participant)
@@ -360,7 +399,6 @@ async def bulk_create_participants(
     await db.commit()
     for p in new_participants:
         await db.refresh(p)
-        
     return new_participants
 
 @app.get("/participants/", response_model=List[schemas.ParticipantRead])
@@ -389,9 +427,43 @@ async def search_participants(
         (models.Participant.email.ilike(search_pattern)) |
         (models.Participant.note.ilike(search_pattern))
     ).limit(limit)
-    
     result = await db.execute(stmt)
     return result.scalars().all()
+
+@app.put("/participants/{participant_id}", response_model=schemas.ParticipantRead)
+async def update_participant(
+    participant_id: int,
+    participant_update: schemas.ParticipantUpdate,
+    db: AsyncSession = Depends(get_db),
+    # Редактирование: Оператор или Админ
+    current_user: models.SystemUser = Depends(get_current_operator_or_admin),
+):
+    participant = await db.get(models.Participant, participant_id)
+    if not participant:
+        raise HTTPException(status_code=404, detail="Участник не найден")
+
+    update_data = participant_update.model_dump(exclude_unset=True)
+
+    # Если меняется имя или примечание, проверяем на дубликаты
+    if "full_name" in update_data or "note" in update_data:
+        new_name = update_data.get("full_name", participant.full_name)
+        new_note = update_data.get("note", participant.note)
+        
+        stmt_dup = select(models.Participant).filter(
+            models.Participant.full_name == new_name,
+            models.Participant.note == new_note,
+            models.Participant.id != participant_id
+        )
+        result_dup = await db.execute(stmt_dup)
+        if result_dup.scalars().first():
+             raise HTTPException(status_code=400, detail="Участник с таким именем и примечанием уже существует.")
+
+    for key, value in update_data.items():
+        setattr(participant, key, value)
+
+    await db.commit()
+    await db.refresh(participant)
+    return participant
 
 @app.delete("/participants/{participant_id}", status_code=204)
 async def delete_participant(
@@ -403,7 +475,7 @@ async def delete_participant(
     participant = await db.get(models.Participant, participant_id)
     if not participant:
         raise HTTPException(status_code=404, detail="Участник не найден")
-    
+        
     await db.delete(participant)
     await db.commit()
     return None
@@ -433,6 +505,26 @@ async def list_directories(
     result = await db.execute(stmt)
     return result.scalars().all()
 
+@app.put("/directories/{directory_id}", response_model=schemas.DirectoryRead)
+async def update_directory(
+    directory_id: int,
+    directory_update: schemas.DirectoryUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: models.SystemUser = Depends(get_current_operator_or_admin),
+):
+    directory = await db.get(models.Directory, directory_id)
+    if not directory:
+        raise HTTPException(status_code=404, detail="Справочник не найден")
+
+    update_data = directory_update.model_dump(exclude_unset=True)
+    
+    for key, value in update_data.items():
+        setattr(directory, key, value)
+
+    await db.commit()
+    await db.refresh(directory)
+    return directory
+
 @app.delete("/directories/{directory_id}", status_code=204)
 async def delete_directory(
     directory_id: int,
@@ -443,7 +535,7 @@ async def delete_directory(
     directory = await db.get(models.Directory, directory_id)
     if not directory:
         raise HTTPException(status_code=404, detail="Справочник не найден")
-    
+        
     await db.delete(directory)
     await db.commit()
     return None
@@ -459,14 +551,14 @@ async def add_member_to_directory(
         raise HTTPException(status_code=404, detail="Участник не найден.")
     if not await db.get(models.Directory, membership.directory_id):
         raise HTTPException(status_code=404, detail="Справочник не найден.")
-
+        
     db_membership = models.DirectoryMembership(**membership.model_dump())
     try:
         db.add(db_membership)
         await db.commit()
     except Exception:
         raise HTTPException(status_code=400, detail="Участник уже состоит в этом справочнике.")
-    
+        
     return membership
 
 @app.delete("/directories/{directory_id}/members/{participant_id}", status_code=204)
@@ -486,7 +578,7 @@ async def remove_member_from_directory(
     
     if not membership:
         raise HTTPException(status_code=404, detail="Участник не найден в этом справочнике")
-    
+        
     await db.delete(membership)
     await db.commit()
     return None
@@ -507,7 +599,7 @@ async def list_directory_members(
         models.DirectoryMembership,
         models.Participant.id == models.DirectoryMembership.participant_id,
     ).filter(models.DirectoryMembership.directory_id == directory_id)
-
+    
     if query:
         search_pattern = f"%{query}%"
         stmt = stmt.filter(
@@ -515,12 +607,13 @@ async def list_directory_members(
             (models.Participant.email.ilike(search_pattern)) |
             (models.Participant.note.ilike(search_pattern))
         )
-    
+        
     stmt = stmt.limit(limit)
     result = await db.execute(stmt)
     return result.scalars().all()
 
 # --- WebSocket Endpoint ---
+
 @app.websocket("/ws/events/{event_id}")
 async def websocket_endpoint(websocket: WebSocket, event_id: int):
     await manager.connect(websocket, event_id)
@@ -531,6 +624,7 @@ async def websocket_endpoint(websocket: WebSocket, event_id: int):
         manager.disconnect(websocket, event_id)
 
 # --- Sync Endpoint (Hybrid System) ---
+
 @app.post("/events/{event_id}/sync/", response_model=schemas.SyncResponse)
 async def sync_registrations(
     event_id: int,
@@ -540,36 +634,37 @@ async def sync_registrations(
     current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
 ):
     server_time = datetime.now(UTC)
+    
     stmt = (
         select(models.Registration)
         .options(joinedload(models.Registration.registered_by))
         .filter(models.Registration.event_id == event_id)
     )
-
+    
     conditions = []
     if sync_req.last_sync_time:
         last_sync = sync_req.last_sync_time
         if last_sync.tzinfo:
             last_sync = last_sync.astimezone(timezone.utc).replace(tzinfo=None)
         conditions.append(models.Registration.registration_time > last_sync)
-    
+        
     if sync_req.known_registration_ids:
         conditions.append(models.Registration.id.not_in(sync_req.known_registration_ids))
-
+        
     if conditions:
         stmt = stmt.filter(and_(*conditions))
-
+        
     result = await db.execute(stmt)
     registrations_orm = result.scalars().all()
-
+    
     registrations_pydantic = [
         schemas.RegistrationRead.model_validate(reg)
         for reg in registrations_orm
     ]
-    
+
     current_user.last_sync_time = server_time
     await db.commit()
-
+    
     return schemas.SyncResponse(
         new_registrations=registrations_pydantic,
         server_time=server_time
@@ -592,6 +687,7 @@ async def register_users(
     event = await db.get(models.Event, event_id)
     if not event:
         raise HTTPException(status_code=404, detail=f"Мероприятие {event_id} не найдено.")
+        
     if not event.registration_active:
         raise HTTPException(status_code=403, detail="Регистрация закрыта.")
 
@@ -601,13 +697,13 @@ async def register_users(
         directory = await db.get(models.Directory, directory_id)
         if not directory:
             raise HTTPException(status_code=404, detail=f"Справочник {directory_id} не найден.")
-        
+            
         stmt_dir_members = select(models.DirectoryMembership.participant_id).filter(
             models.DirectoryMembership.directory_id == directory_id,
         )
         result_members = await db.execute(stmt_dir_members)
         target_participant_ids.update(result_members.scalars().all())
-
+        
     if not target_participant_ids:
         raise HTTPException(status_code=400, detail="Не указаны участники.")
 
@@ -617,14 +713,14 @@ async def register_users(
     )
     result_existing = await db.execute(stmt_existing)
     existing_ids = set(result_existing.scalars().all())
-
+    
     participants_to_register = target_participant_ids - existing_ids
+    
     successful_registrations: list[models.Registration] = []
-
     for p_id in participants_to_register:
         if not await db.get(models.Participant, p_id):
             continue
-        
+            
         db_registration = models.Registration(
             event_id=event_id,
             participant_id=p_id,
@@ -652,7 +748,7 @@ async def register_users(
                 "role": reg_role
             }
         })
-
+        
     if successful_registrations:
         notify_data = {
             "type": "new_registrations",
@@ -671,7 +767,6 @@ async def unregister_participant(
     participant_id: int,
     db: AsyncSession = Depends(get_db),
     # Отмена регистрации (удаление из списка присутствующих): Оператор или Админ
-    # Если Регистратор ошибся, он должен позвать Оператора (согласно вашему ТЗ "Регистратор может только регистрировать")
     current_user: models.SystemUser = Depends(get_current_operator_or_admin),
 ):
     stmt = select(models.Registration).filter(
@@ -683,18 +778,18 @@ async def unregister_participant(
     
     if not registration:
         raise HTTPException(status_code=404, detail="Регистрация не найдена.")
-
+        
     reg_id = registration.id
     await db.delete(registration)
     await db.commit()
-
+    
     notify_data = {
         "type": "deleted_registration",
         "registration_id": reg_id,
         "participant_id": participant_id
     }
     await manager.broadcast(json.dumps(notify_data), event_id)
-
+    
     return None
 
 @app.get("/events/{event_id}/participants/", response_model=List[schemas.ParticipantStatus])
@@ -707,7 +802,7 @@ async def get_event_participants(
     current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
 ):
     stmt = select(
-        models.Participant,
+        models.Participant, 
         models.Registration.arrival_time,
         models.SystemUser.username.label("registered_by_full_name"),
         models.SystemUser.role.label("registered_by_role"),
@@ -720,7 +815,7 @@ async def get_event_participants(
     ).filter(
         models.Registration.event_id == event_id,
     )
-
+    
     if query:
         search_pattern = f"%{query}%"
         stmt = stmt.filter(
@@ -728,10 +823,10 @@ async def get_event_participants(
             (models.Participant.email.ilike(search_pattern)) |
             (models.Participant.note.ilike(search_pattern))
         )
-    
+
     stmt = stmt.limit(limit)
     result = await db.execute(stmt)
-
+    
     participants_status: list[schemas.ParticipantStatus] = []
     for participant_orm, arrival_time, reg_full_name, reg_role in result.all():
         participant_dict = schemas.ParticipantRead.model_validate(participant_orm).model_dump()

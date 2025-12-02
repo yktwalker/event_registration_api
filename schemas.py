@@ -27,7 +27,6 @@ class SystemUserUpdate(BaseModel):
 class SystemUserRead(SystemUserBase):
     id: int
     last_sync_time: Optional[datetime] = None
-    
     model_config = ConfigDict(from_attributes=True)
 
 class ParticipantBase(BaseModel):
@@ -39,6 +38,13 @@ class ParticipantBase(BaseModel):
 class ParticipantCreate(ParticipantBase):
     pass
 
+class ParticipantUpdate(BaseModel):
+    """Схема для обновления данных участника (PUT)."""
+    full_name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    note: Optional[str] = None
+
 class ParticipantRead(ParticipantBase):
     id: int
     model_config = ConfigDict(from_attributes=True)
@@ -48,9 +54,18 @@ class EventBase(BaseModel):
     description: Optional[str] = None
     event_date: datetime
     registration_active: bool = True
+    max_participants: Optional[int] = None
 
 class EventCreate(EventBase):
     pass
+
+class EventUpdate(BaseModel):
+    """Схема для обновления мероприятия (PUT). Все поля опциональны."""
+    title: Optional[str] = None
+    description: Optional[str] = None
+    event_date: Optional[datetime] = None
+    registration_active: Optional[bool] = None
+    max_participants: Optional[int] = None
 
 class EventRead(EventBase):
     id: int
@@ -62,6 +77,11 @@ class DirectoryBase(BaseModel):
 
 class DirectoryCreate(DirectoryBase):
     pass
+
+class DirectoryUpdate(BaseModel):
+    """Схема для обновления справочника (PUT)."""
+    name: Optional[str] = None
+    description: Optional[str] = None
 
 class DirectoryRead(DirectoryBase):
     id: int
@@ -85,14 +105,12 @@ class RegistrationRead(RegistrationBase):
     registration_time: datetime
     arrival_time: Optional[datetime] = None
     registered_by: Optional[SystemUserRead] = None
-    
     model_config = ConfigDict(from_attributes=True)
 
 class ParticipantStatus(ParticipantRead):
     arrival_time: Optional[datetime] = None
     registered_by_full_name: str
     registered_by_role: SystemUserRole
-    
     model_config = ConfigDict(from_attributes=True)
 
 # --- Схемы для синхронизации ---
