@@ -438,17 +438,19 @@ async def list_participants(
 ):
     stmt = (
         select(models.Participant)
-        # Если фронту нужны справочники в списке, раскомментируйте options и используйте participant_to_schema
-        # .options(
-        #    selectinload(models.Participant.directory_memberships).joinedload(models.DirectoryMembership.directory)
-        # )
+        # 1. Подгружаем справочники
+        .options(
+           selectinload(models.Participant.directory_memberships).joinedload(models.DirectoryMembership.directory)
+        )
         .limit(limit)
         .offset(offset)
     )
     result = await db.execute(stmt)
     
-    # Возвращаем просто список, directories будут []
-    return result.scalars().all()
+    # 2. Преобразуем каждый объект вручную, чтобы заполнить поле directories
+    # Используем helper-функцию, которую мы добавили ранее
+    return [participant_to_schema(p) for p in result.scalars().all()]
+
 
 @app.get("/participants/search/", response_model=List[schemas.ParticipantRead])
 async def search_participants(
@@ -460,6 +462,10 @@ async def search_participants(
     search_pattern = f"%{query}%"
     stmt = (
         select(models.Participant)
+        # 1. Подгружаем справочники и здесь тоже
+        .options(
+            selectinload(models.Participant.directory_memberships).joinedload(models.DirectoryMembership.directory)
+        )
         .filter(
             (models.Participant.full_name.ilike(search_pattern)) |
             (models.Participant.email.ilike(search_pattern)) |
@@ -468,7 +474,9 @@ async def search_participants(
         .limit(limit)
     )
     result = await db.execute(stmt)
-    return result.scalars().all()
+    
+    # 2. Возвращаем преобразованный список
+    return [participant_to_schema(p) for p in result.scalars().all()]
 
 @app.put("/participants/{participant_id}", response_model=schemas.ParticipantRead)
 async def update_participant(

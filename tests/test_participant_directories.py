@@ -8,10 +8,10 @@ async def test_participant_directories_loading(
 ):
     headers = {"Authorization": f"Bearer {admin_token}"}
 
-    # 1. Создаем участника (ДОБАВЛЕН EMAIL)
+    # 1. Создаем участника
     p_data = {
         "full_name": "Directory Test User", 
-        "email": "dir_test@example.com", # Обязательное поле!
+        "email": "dir_test@example.com",
         "note": "test"
     }
     res_p = await client.post("/participants/", json=p_data, headers=headers)
@@ -29,7 +29,7 @@ async def test_participant_directories_loading(
     res_link = await client.post("/directories/add-member/", json=link_data, headers=headers)
     assert res_link.status_code == 200
 
-    # 4. ПРОВЕРКА: Запрашиваем участника через GET /{id} и ждем, что directories не пустой
+    # 4. ПРОВЕРКА: GET /{id} (Детальный просмотр)
     res_get = await client.get(f"/participants/{p_id}", headers=headers)
     assert res_get.status_code == 200
     data = res_get.json()
@@ -39,9 +39,15 @@ async def test_participant_directories_loading(
     assert found_dir is not None
     assert found_dir["name"] == "Test Directory Unique"
 
-    # 5. ПРОВЕРКА: В списке участников (GET /) directories должен быть пустым
+    # 5. ПРОВЕРКА: GET /participants/ (Общий список)
+    # ТЕПЕРЬ ЗДЕСЬ ТОЖЕ ДОЛЖНЫ БЫТЬ ДАННЫЕ (мы это включили в main.py)
     res_list = await client.get("/participants/", headers=headers)
     assert res_list.status_code == 200
     found_p = next((p for p in res_list.json() if p["id"] == p_id), None)
     assert found_p is not None
-    assert found_p["directories"] == [] 
+    
+    # Проверяем, что справочник пришел и в списке
+    assert len(found_p["directories"]) > 0
+    found_dir_list = next((d for d in found_p["directories"] if d["id"] == d_id), None)
+    assert found_dir_list is not None
+    assert found_dir_list["name"] == "Test Directory Unique"
