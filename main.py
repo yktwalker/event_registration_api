@@ -28,7 +28,6 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 # --- WebSocket Connection Manager ---
 class ConnectionManager:
     def __init__(self):
-        # Храним соединения: event_id -> list of websockets
         self.active_connections: dict[int, List[WebSocket]] = {}
 
     async def connect(self, websocket: WebSocket, event_id: int):
@@ -46,7 +45,6 @@ class ConnectionManager:
 
     async def broadcast(self, message: str, event_id: int):
         if event_id in self.active_connections:
-            # Копируем список для безопасной итерации
             active_sockets = self.active_connections[event_id][:]
             for connection in active_sockets:
                 try:
@@ -59,16 +57,14 @@ manager = ConnectionManager()
 # --- Lifespan ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Логика запуска
     async with AsyncSessionLocal() as session:
         await init_db(session)
     yield
-    # Логика завершения
 
 app = FastAPI(
     title="Event Registration API (Hybrid)",
     description="API с JWT, RBAC и гибридной синхронизацией (WebSocket + REST)",
-    version="7.5.0",
+    version="7.5.2",
     lifespan=lifespan,
     root_path="/api"
 )
@@ -111,7 +107,6 @@ async def get_current_user(
 async def get_current_admin(
     current_user: models.SystemUser = Depends(get_current_user),
 ) -> models.SystemUser:
-    """Только Администратор."""
     if current_user.role != models.SystemUserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Недостаточно прав. Требуется роль Администратора.")
     return current_user
@@ -119,7 +114,6 @@ async def get_current_admin(
 async def get_current_operator_or_admin(
     current_user: models.SystemUser = Depends(get_current_user),
 ) -> models.SystemUser:
-    """Администратор или Оператор."""
     if current_user.role not in (models.SystemUserRole.ADMIN, models.SystemUserRole.OPERATOR):
         raise HTTPException(
             status_code=403,
@@ -130,11 +124,30 @@ async def get_current_operator_or_admin(
 async def get_current_registrar_or_admin(
     current_user: models.SystemUser = Depends(get_current_user),
 ) -> models.SystemUser:
-    """Администратор, Оператор или Регистратор."""
     allowed = (models.SystemUserRole.ADMIN, models.SystemUserRole.REGISTRAR, models.SystemUserRole.OPERATOR)
     if current_user.role not in allowed:
         raise HTTPException(status_code=403, detail="Недостаточно прав.")
     return current_user
+
+# --- Helper для преобразования участника с директориями ---
+def participant_to_schema(participant: models.Participant) -> schemas.ParticipantRead:
+    """Конвертирует ORM-объект в схему, вручную заполняя поле directories."""
+    p_dto = schemas.ParticipantRead.model_validate(participant)
+    
+    # Проверяем, загружены ли memberships, чтобы не вызвать ошибку lazy load
+    # В async сессии нельзя просто проверить loaded, но если мы здесь, мы предполагаем, что они подгружены через .options()
+    # Однако, если мы используем этот метод в местах без .options(), нужно быть осторожным.
+    # Но так как мы удалили property из модели, доступ к directory_memberships безопасен (вернет пустой список или то что есть в сессии) 
+    # ЕСЛИ они были подгружены. Если нет - будет та же ошибка await.
+    
+    # Поэтому мы будем использовать этот метод ТОЛЬКО там, где мы точно подгрузили данные.
+    if participant.directory_memberships:
+         p_dto.directories = [
+            schemas.DirectoryLink.model_validate(m.directory) 
+            for m in participant.directory_memberships
+            if m.directory # На всякий случай
+        ]
+    return p_dto
 
 # --- Endpoints ---
 
@@ -240,7 +253,6 @@ async def delete_system_user(
 @app.get("/events/", response_model=List[schemas.EventRead])
 async def list_events(
     db: AsyncSession = Depends(get_db),
-    # Список событий доступен всем авторизованным, чтобы регистратор мог выбрать ивент
     current_user: models.SystemUser = Depends(get_current_user),
 ):
     stmt = select(models.Event)
@@ -260,10 +272,8 @@ async def get_active_event_for_registrar(
 async def create_event(
     event: schemas.EventCreate,
     db: AsyncSession = Depends(get_db),
-    # Создание событий: Оператор или Админ
     current_user: models.SystemUser = Depends(get_current_operator_or_admin),
 ):
-    # ИСПРАВЛЕНИЕ: Проверяем конфликт только если новое событие хочет быть активным
     if event.registration_active:
         stmt_active = select(models.Event).filter(models.Event.registration_active == True)
         result_active = await db.execute(stmt_active)
@@ -277,7 +287,6 @@ async def create_event(
             )
         
     event_data = event.model_dump()
-    # Защита от лишних полей, если модель изменится
     if not hasattr(models.Event, "description") and "description" in event_data:
         del event_data["description"]
         
@@ -301,7 +310,6 @@ async def update_event(
     if not event:
         raise HTTPException(status_code=404, detail="Мероприятие не найдено")
 
-    # Если пытаемся активировать мероприятие, проверяем, нет ли другого активного
     if event_update.registration_active is True:
         stmt_active = select(models.Event).filter(
             models.Event.registration_active == True,
@@ -319,7 +327,6 @@ async def update_event(
 
     update_data = event_update.model_dump(exclude_unset=True)
     
-    # Удаляем tzinfo из даты, если она передана
     if "event_date" in update_data and update_data["event_date"] and update_data["event_date"].tzinfo is not None:
         update_data["event_date"] = update_data["event_date"].replace(tzinfo=None)
 
@@ -341,7 +348,6 @@ async def get_event(event_id: int, db: AsyncSession = Depends(get_db)):
 async def delete_event(
     event_id: int,
     db: AsyncSession = Depends(get_db),
-    # Удаление событий: Оператор или Админ
     current_user: models.SystemUser = Depends(get_current_operator_or_admin),
 ):
     event = await db.get(models.Event, event_id)
@@ -358,7 +364,6 @@ async def delete_event(
 async def create_participant(
     participant: schemas.ParticipantCreate,
     db: AsyncSession = Depends(get_db),
-    # Создание участников: Оператор или Админ
     current_user: models.SystemUser = Depends(get_current_operator_or_admin),
 ):
     stmt = select(models.Participant).filter(
@@ -372,6 +377,8 @@ async def create_participant(
     db_participant = models.Participant(**participant.model_dump())
     db.add(db_participant)
     await db.commit()
+    
+    # Просто refresh, directories будут пустыми (это безопасно)
     await db.refresh(db_participant)
     return db_participant
 
@@ -379,7 +386,6 @@ async def create_participant(
 async def bulk_create_participants(
     participants: List[schemas.ParticipantCreate],
     db: AsyncSession = Depends(get_db),
-    # Массовое создание: Оператор или Админ
     current_user: models.SystemUser = Depends(get_current_operator_or_admin),
 ):
     new_participants: list[models.Participant] = []
@@ -401,16 +407,47 @@ async def bulk_create_participants(
         await db.refresh(p)
     return new_participants
 
+@app.get("/participants/{participant_id}", response_model=schemas.ParticipantRead)
+async def get_participant(
+    participant_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
+):
+    stmt = (
+        select(models.Participant)
+        .options(
+            selectinload(models.Participant.directory_memberships).joinedload(models.DirectoryMembership.directory)
+        )
+        .filter(models.Participant.id == participant_id)
+    )
+    result = await db.execute(stmt)
+    participant = result.scalars().first()
+    
+    if not participant:
+        raise HTTPException(status_code=404, detail="Участник не найден")
+    
+    # Вручную маппим, так как у нас подгружены данные
+    return participant_to_schema(participant)
+
 @app.get("/participants/", response_model=List[schemas.ParticipantRead])
 async def list_participants(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
-    # Просмотр участников: Доступен Регистратору (для поиска кого регистрировать)
     current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
 ):
-    stmt = select(models.Participant).limit(limit).offset(offset)
+    stmt = (
+        select(models.Participant)
+        # Если фронту нужны справочники в списке, раскомментируйте options и используйте participant_to_schema
+        # .options(
+        #    selectinload(models.Participant.directory_memberships).joinedload(models.DirectoryMembership.directory)
+        # )
+        .limit(limit)
+        .offset(offset)
+    )
     result = await db.execute(stmt)
+    
+    # Возвращаем просто список, directories будут []
     return result.scalars().all()
 
 @app.get("/participants/search/", response_model=List[schemas.ParticipantRead])
@@ -418,15 +455,18 @@ async def search_participants(
     query: str = Query(...),
     limit: int = Query(100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
-    # Поиск участников: Доступен Регистратору
     current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
 ):
     search_pattern = f"%{query}%"
-    stmt = select(models.Participant).filter(
-        (models.Participant.full_name.ilike(search_pattern)) |
-        (models.Participant.email.ilike(search_pattern)) |
-        (models.Participant.note.ilike(search_pattern))
-    ).limit(limit)
+    stmt = (
+        select(models.Participant)
+        .filter(
+            (models.Participant.full_name.ilike(search_pattern)) |
+            (models.Participant.email.ilike(search_pattern)) |
+            (models.Participant.note.ilike(search_pattern))
+        )
+        .limit(limit)
+    )
     result = await db.execute(stmt)
     return result.scalars().all()
 
@@ -435,7 +475,6 @@ async def update_participant(
     participant_id: int,
     participant_update: schemas.ParticipantUpdate,
     db: AsyncSession = Depends(get_db),
-    # Редактирование: Оператор или Админ
     current_user: models.SystemUser = Depends(get_current_operator_or_admin),
 ):
     participant = await db.get(models.Participant, participant_id)
@@ -444,7 +483,6 @@ async def update_participant(
 
     update_data = participant_update.model_dump(exclude_unset=True)
 
-    # Если меняется имя или примечание, проверяем на дубликаты
     if "full_name" in update_data or "note" in update_data:
         new_name = update_data.get("full_name", participant.full_name)
         new_note = update_data.get("note", participant.note)
@@ -463,13 +501,14 @@ async def update_participant(
 
     await db.commit()
     await db.refresh(participant)
+    
+    # Возвращаем обновленного участника (без справочников, так как они не менялись здесь)
     return participant
 
 @app.delete("/participants/{participant_id}", status_code=204)
 async def delete_participant(
     participant_id: int,
     db: AsyncSession = Depends(get_db),
-    # Удаление участников: Оператор или Админ
     current_user: models.SystemUser = Depends(get_current_operator_or_admin),
 ):
     participant = await db.get(models.Participant, participant_id)
@@ -486,7 +525,6 @@ async def delete_participant(
 async def create_directory(
     directory: schemas.DirectoryCreate,
     db: AsyncSession = Depends(get_db),
-    # Создание справочников: Оператор или Админ
     current_user: models.SystemUser = Depends(get_current_operator_or_admin),
 ):
     db_directory = models.Directory(**directory.model_dump())
@@ -498,7 +536,6 @@ async def create_directory(
 @app.get("/directories/", response_model=List[schemas.DirectoryRead])
 async def list_directories(
     db: AsyncSession = Depends(get_db),
-    # Просмотр справочников: Доступен Регистратору (он может фильтровать по ним)
     current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
 ):
     stmt = select(models.Directory)
@@ -529,7 +566,6 @@ async def update_directory(
 async def delete_directory(
     directory_id: int,
     db: AsyncSession = Depends(get_db),
-    # Удаление справочников: Оператор или Админ
     current_user: models.SystemUser = Depends(get_current_operator_or_admin),
 ):
     directory = await db.get(models.Directory, directory_id)
@@ -544,7 +580,6 @@ async def delete_directory(
 async def add_member_to_directory(
     membership: schemas.DirectoryMembershipCreate,
     db: AsyncSession = Depends(get_db),
-    # Управление составом справочников: Оператор или Админ
     current_user: models.SystemUser = Depends(get_current_operator_or_admin),
 ):
     if not await db.get(models.Participant, membership.participant_id):
@@ -566,7 +601,6 @@ async def remove_member_from_directory(
     directory_id: int,
     participant_id: int,
     db: AsyncSession = Depends(get_db),
-    # Управление составом справочников: Оператор или Админ
     current_user: models.SystemUser = Depends(get_current_operator_or_admin),
 ):
     stmt = select(models.DirectoryMembership).filter(
@@ -589,16 +623,19 @@ async def list_directory_members(
     query: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
-    # Просмотр состава: Регистратор должен видеть, кто в списке
     current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
 ):
     if not await db.get(models.Directory, directory_id):
         raise HTTPException(status_code=404, detail="Справочник не найден.")
 
-    stmt = select(models.Participant).join(
-        models.DirectoryMembership,
-        models.Participant.id == models.DirectoryMembership.participant_id,
-    ).filter(models.DirectoryMembership.directory_id == directory_id)
+    stmt = (
+        select(models.Participant)
+        .join(
+            models.DirectoryMembership,
+            models.Participant.id == models.DirectoryMembership.participant_id,
+        )
+        .filter(models.DirectoryMembership.directory_id == directory_id)
+    )
     
     if query:
         search_pattern = f"%{query}%"
@@ -630,7 +667,6 @@ async def sync_registrations(
     event_id: int,
     sync_req: schemas.SyncRequest,
     db: AsyncSession = Depends(get_db),
-    # Синхронизация: Регистратор
     current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
 ):
     server_time = datetime.now(UTC)
@@ -676,7 +712,6 @@ async def register_users(
     participant_ids: Optional[List[int]] = Body(None),
     directory_id: Optional[int] = Body(None),
     db: AsyncSession = Depends(get_db),
-    # Регистрация на мероприятие (чек-ин): Регистратор
     current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
 ):
     reg_user_id = current_user.id
@@ -766,7 +801,6 @@ async def unregister_participant(
     event_id: int,
     participant_id: int,
     db: AsyncSession = Depends(get_db),
-    # Отмена регистрации (удаление из списка присутствующих): Оператор или Админ
     current_user: models.SystemUser = Depends(get_current_operator_or_admin),
 ):
     stmt = select(models.Registration).filter(
@@ -798,7 +832,6 @@ async def get_event_participants(
     query: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
-    # Просмотр списка присутствующих: Регистратор должен видеть статус
     current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
 ):
     stmt = select(

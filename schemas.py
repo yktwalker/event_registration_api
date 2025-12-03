@@ -29,6 +29,12 @@ class SystemUserRead(SystemUserBase):
     last_sync_time: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
+# --- Directory Link Schema ---
+class DirectoryLink(BaseModel):
+    id: int
+    name: str
+    model_config = ConfigDict(from_attributes=True)
+
 class ParticipantBase(BaseModel):
     full_name: str
     email: Optional[EmailStr] = None
@@ -47,6 +53,8 @@ class ParticipantUpdate(BaseModel):
 
 class ParticipantRead(ParticipantBase):
     id: int
+    # Список справочников, в которых состоит участник
+    directories: List[DirectoryLink] = [] 
     model_config = ConfigDict(from_attributes=True)
 
 class EventBase(BaseModel):

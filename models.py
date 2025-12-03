@@ -6,7 +6,7 @@ from database import Base
 
 class SystemUserRole(str, Enum):
     ADMIN = "Admin"
-    OPERATOR = "Operator"    # <--- Добавлено
+    OPERATOR = "Operator"
     REGISTRAR = "Registrar"
     PARTICIPANT = "Participant"
 
@@ -45,7 +45,6 @@ class Participant(Base):
     __tablename__ = "participants"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    # Поле event_id может быть Null, так как участник может существовать глобально
     event_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("events.id"), index=True, nullable=True)
     full_name: Mapped[str] = mapped_column(String)
     email: Mapped[str] = mapped_column(String, index=True)
