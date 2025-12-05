@@ -157,21 +157,27 @@ async def set_participant_arrival(
     db: AsyncSession = Depends(get_db),
     current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
 ):
-    stmt = select(models.Registration).filter(
-        models.Registration.event_id == event_id,
-        models.Registration.participant_id == participant_id
-    ).options(joinedload(models.Registration.registered_by))
-    
+    stmt = (
+        select(models.Registration)
+        .filter(
+            models.Registration.event_id == event_id,
+            models.Registration.participant_id == participant_id,
+        )
+        .options(joinedload(models.Registration.registered_by))
+    )
     result = await db.execute(stmt)
     registration = result.scalars().first()
-
     if not registration:
-        raise HTTPException(status_code=404, detail="Участник не зарегистрирован на мероприятие (нет в плане).")
+        raise HTTPException(
+            status_code=404, 
+            detail="Участник не зарегистрирован на это мероприятие",
+            )
 
-    registration.arrival_time = datetime.now(UTC)
-    
+    # ключевая правка: сохраняем наивное UTC-время
+    now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+    registration.arrival_time = now_utc_naive
+
     await db.commit()
-    # Здесь используем refresh, чтобы безопасно вернуть объект с обновленными полями
     await db.refresh(registration)
 
     notify_data = {
@@ -179,7 +185,7 @@ async def set_participant_arrival(
         "registration_id": registration.id,
         "participant_id": participant_id,
         "arrival_time": registration.arrival_time.isoformat(),
-        "action": "set"
+        "action": "set",
     }
     await manager.broadcast(json.dumps(notify_data), event_id)
 
