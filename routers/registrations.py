@@ -1,7 +1,6 @@
 import json
 from typing import List, Optional
 from datetime import datetime, timezone, UTC
-
 from fastapi import APIRouter, Depends, HTTPException, Body, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -16,7 +15,6 @@ from manager import manager
 
 router = APIRouter()
 
-
 @router.post("/events/{event_id}/sync/", response_model=schemas.SyncResponse)
 async def sync_registrations(
     event_id: int,
@@ -25,7 +23,6 @@ async def sync_registrations(
     current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
 ):
     server_time = datetime.now(UTC)
-
     stmt = (
         select(models.Registration)
         .options(joinedload(models.Registration.registered_by))
@@ -38,7 +35,7 @@ async def sync_registrations(
         if last_sync.tzinfo:
             last_sync = last_sync.astimezone(timezone.utc).replace(tzinfo=None)
         conditions.append(models.Registration.registration_time > last_sync)
-
+    
     if sync_req.known_registration_ids:
         conditions.append(models.Registration.id.not_in(sync_req.known_registration_ids))
 
@@ -60,14 +57,13 @@ async def sync_registrations(
         server_time=server_time,
     )
 
-
 @router.post("/events/{event_id}/register/", response_model=List[schemas.RegistrationRead])
 async def register_users(
     event_id: int,
     participant_ids: Optional[List[int]] = Body(None),
     directory_id: Optional[int] = Body(None),
     db: AsyncSession = Depends(get_db),
-    current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
+    current_user: models.SystemUser = Depends(get_current_operator_or_admin),
 ):
     reg_user_id = current_user.id
     reg_username = current_user.username
@@ -77,7 +73,7 @@ async def register_users(
     event = await db.get(models.Event, event_id)
     if not event:
         raise HTTPException(status_code=404, detail=f"Мероприятие {event_id} не найдено.")
-
+    
     if not event.registration_active:
         raise HTTPException(status_code=403, detail="Регистрация закрыта.")
 
@@ -87,9 +83,9 @@ async def register_users(
         directory = await db.get(models.Directory, directory_id)
         if not directory:
             raise HTTPException(status_code=404, detail=f"Справочник {directory_id} не найден.")
-
+        
         stmt_dir_members = select(models.DirectoryMembership.participant_id).filter(
-            models.DirectoryMembership.directory_id == directory_id,
+            models.DirectoryMembership.directory_id == directory_id
         )
         result_members = await db.execute(stmt_dir_members)
         target_participant_ids.update(result_members.scalars().all())
@@ -99,18 +95,19 @@ async def register_users(
 
     stmt_existing = select(models.Registration.participant_id).filter(
         models.Registration.event_id == event_id,
-        models.Registration.participant_id.in_(target_participant_ids),
+        models.Registration.participant_id.in_(target_participant_ids)
     )
     result_existing = await db.execute(stmt_existing)
     existing_ids = set(result_existing.scalars().all())
 
     participants_to_register = target_participant_ids - existing_ids
-
+    
     successful_registrations: list[models.Registration] = []
+
     for p_id in participants_to_register:
         if not await db.get(models.Participant, p_id):
             continue
-
+        
         db_registration = models.Registration(
             event_id=event_id,
             participant_id=p_id,
@@ -153,6 +150,79 @@ async def register_users(
 
     return response_data
 
+@router.put("/events/{event_id}/participants/{participant_id}/arrival", response_model=schemas.RegistrationRead)
+async def set_participant_arrival(
+    event_id: int,
+    participant_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
+):
+    stmt = select(models.Registration).filter(
+        models.Registration.event_id == event_id,
+        models.Registration.participant_id == participant_id
+    ).options(joinedload(models.Registration.registered_by))
+    
+    result = await db.execute(stmt)
+    registration = result.scalars().first()
+
+    if not registration:
+        raise HTTPException(status_code=404, detail="Участник не зарегистрирован на мероприятие (нет в плане).")
+
+    registration.arrival_time = datetime.now(UTC)
+    
+    await db.commit()
+    # Здесь используем refresh, чтобы безопасно вернуть объект с обновленными полями
+    await db.refresh(registration)
+
+    notify_data = {
+        "type": "arrival_update",
+        "registration_id": registration.id,
+        "participant_id": participant_id,
+        "arrival_time": registration.arrival_time.isoformat(),
+        "action": "set"
+    }
+    await manager.broadcast(json.dumps(notify_data), event_id)
+
+    return registration
+
+@router.delete("/events/{event_id}/participants/{participant_id}/arrival", status_code=204)
+async def unset_participant_arrival(
+    event_id: int,
+    participant_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
+):
+    stmt = select(models.Registration).filter(
+        models.Registration.event_id == event_id,
+        models.Registration.participant_id == participant_id
+    )
+    
+    result = await db.execute(stmt)
+    registration = result.scalars().first()
+
+    if not registration:
+        raise HTTPException(status_code=404, detail="Регистрация не найдена.")
+
+    # !!! ВАЖНО: Сохраняем ID до коммита, чтобы избежать ошибки MissingGreenlet
+    # при обращении к expired объекту
+    reg_id = registration.id
+
+    # Очищаем поле
+    registration.arrival_time = None
+    
+    await db.commit()
+
+    # Оповещаем об отмене прибытия
+    notify_data = {
+        "type": "arrival_update",
+        "registration_id": reg_id, # Используем сохраненную переменную
+        "participant_id": participant_id,
+        "arrival_time": None,
+        "action": "unset"
+    }
+    await manager.broadcast(json.dumps(notify_data), event_id)
+    
+    return None
 
 @router.delete("/events/{event_id}/participants/{participant_id}", status_code=204)
 async def unregister_participant(
@@ -163,7 +233,7 @@ async def unregister_participant(
 ):
     stmt = select(models.Registration).filter(
         models.Registration.event_id == event_id,
-        models.Registration.participant_id == participant_id,
+        models.Registration.participant_id == participant_id
     )
     result = await db.execute(stmt)
     registration = result.scalars().first()
@@ -184,7 +254,6 @@ async def unregister_participant(
 
     return None
 
-
 @router.get("/events/{event_id}/participants/", response_model=List[schemas.ParticipantStatus])
 async def get_event_participants(
     event_id: int,
@@ -193,7 +262,6 @@ async def get_event_participants(
     db: AsyncSession = Depends(get_db),
     current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
 ):
-    # Выбираем конкретные поля вместо ORM-объектов для безопасности
     stmt = select(
         models.Participant.id,
         models.Participant.full_name,
@@ -226,11 +294,8 @@ async def get_event_participants(
     rows = result.all()
 
     participants_status = []
-
     if rows:
         participant_ids = [row.id for row in rows]
-
-        # Отдельный запрос для загрузки справочников
         stmt_dirs = select(
             models.DirectoryMembership.participant_id,
             models.Directory.id.label("dir_id"),
@@ -247,7 +312,6 @@ async def get_event_participants(
                 dirs_map[p_id] = []
             dirs_map[p_id].append({"id": d_id, "name": d_name})
 
-        # Сборка ответа
         for row in rows:
             p_dirs = dirs_map.get(row.id, [])
             status_obj = schemas.ParticipantStatus(
@@ -264,7 +328,6 @@ async def get_event_participants(
             participants_status.append(status_obj)
 
     return participants_status
-
 
 @router.get(
     "/events/{event_id}/registrations/search",
@@ -285,11 +348,6 @@ async def search_event_registrations(
     db: AsyncSession = Depends(get_db),
     current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
 ):
-    """
-    Поиск участников события с поддержкой фильтрации, сортировки и пагинации.
-    Возвращает только зарегистрированных участников (у кого есть запись Registration).
-    """
-    # Выбираем конкретные поля, избегая ORM-объектов
     stmt = select(
         models.Participant.id,
         models.Participant.full_name,
@@ -339,12 +397,9 @@ async def search_event_registrations(
     rows = result.all()
 
     participants_status = []
-
     if rows:
-        # Собираем ID участников для загрузки их справочников
         participant_ids = [row.id for row in rows]
-
-        # Отдельный быстрый запрос для справочников
+        
         stmt_dirs = select(
             models.DirectoryMembership.participant_id,
             models.Directory.id.label("dir_id"),
@@ -356,17 +411,14 @@ async def search_event_registrations(
 
         dirs_result = await db.execute(stmt_dirs)
         
-        # Строим словарь {participant_id: [{"id": ..., "name": ...}, ...]}
         dirs_map = {}
         for p_id, d_id, d_name in dirs_result.all():
             if p_id not in dirs_map:
                 dirs_map[p_id] = []
             dirs_map[p_id].append({"id": d_id, "name": d_name})
 
-        # Собираем итоговый ответ
         for row in rows:
             p_dirs = dirs_map.get(row.id, [])
-            
             status_obj = schemas.ParticipantStatus(
                 id=row.id,
                 full_name=row.full_name,
