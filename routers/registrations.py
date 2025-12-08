@@ -25,23 +25,29 @@ async def sync_registrations(
     db: AsyncSession = Depends(get_db),
     current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
 ):
-    server_time = datetime.now(UTC)
+    # 1. Генерируем "наивное" время UTC для работы с БД (чтобы не было ошибки offset-naive vs aware)
+    server_time_naive = datetime.now(timezone.utc).replace(tzinfo=None)
     
+    # 2. Формируем запрос с selectinload для избежания MissingGreenlet при валидации
     stmt = (
         select(models.Registration)
-        .options(joinedload(models.Registration.registered_by))
+        .options(selectinload(models.Registration.registered_by))
         .filter(models.Registration.event_id == event_id)
     )
 
     conditions = []
     if sync_req.last_sync_time:
         last_sync = sync_req.last_sync_time
+        # Если клиент прислал с таймзоной - приводим к UTC и убираем её
         if last_sync.tzinfo:
             last_sync = last_sync.astimezone(timezone.utc).replace(tzinfo=None)
         conditions.append(models.Registration.registration_time > last_sync)
     
     if sync_req.known_registration_ids:
-        conditions.append(models.Registration.id.not_in(sync_req.known_registration_ids))
+        # Убедимся, что передали не пустой список, иначе not_in может вести себя странно в некоторых версиях
+        ids = sync_req.known_registration_ids
+        if ids:
+            conditions.append(models.Registration.id.not_in(ids))
 
     if conditions:
         stmt = stmt.filter(and_(*conditions))
@@ -49,16 +55,18 @@ async def sync_registrations(
     result = await db.execute(stmt)
     registrations_orm = result.scalars().all()
 
-    registrations_pydantic = [
-        schemas.RegistrationRead.model_validate(reg) for reg in registrations_orm
-    ]
+    # 3. Валидация в Pydantic модели
+    registrations_pydantic = []
+    for reg in registrations_orm:
+        registrations_pydantic.append(schemas.RegistrationRead.model_validate(reg))
 
-    current_user.last_sync_time = server_time
+    # 4. Обновляем время пользователя (naive datetime!)
+    current_user.last_sync_time = server_time_naive
     await db.commit()
 
     return schemas.SyncResponse(
         new_registrations=registrations_pydantic,
-        server_time=server_time,
+        server_time=server_time_naive,
     )
 
 @router.post("/events/{event_id}/register/", response_model=List[schemas.RegistrationRead])
@@ -166,7 +174,7 @@ async def set_participant_arrival(
             models.Registration.event_id == event_id,
             models.Registration.participant_id == participant_id,
         )
-        .options(joinedload(models.Registration.registered_by))
+        .options(selectinload(models.Registration.registered_by))
     )
     result = await db.execute(stmt)
     registration = result.scalars().first()
@@ -177,7 +185,7 @@ async def set_participant_arrival(
             detail="Участник не зарегистрирован на это мероприятие",
         )
 
-    # ключевая правка: сохраняем наивное UTC-время
+    # Сохраняем наивное UTC-время
     now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
     registration.arrival_time = now_utc_naive
     
