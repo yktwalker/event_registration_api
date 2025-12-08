@@ -2,7 +2,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-
+from sqlalchemy import func  # Добавлен импорт func
 import models
 import schemas
 from database import get_db
@@ -28,6 +28,45 @@ async def get_active_event_for_registrar(
     result = await db.execute(stmt)
     return result.scalars().first()
 
+@router.get("/events/active/stats", response_model=schemas.EventStats)
+async def get_active_event_stats(
+    db: AsyncSession = Depends(get_db),
+    current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
+):
+    """
+    Возвращает статистику по текущему активному мероприятию:
+    - Название
+    - Общее количество регистраций
+    - Количество пришедших (есть arrival_time)
+    """
+    stmt_active = select(models.Event).filter(models.Event.registration_active == True)
+    result_active = await db.execute(stmt_active)
+    active_event = result_active.scalars().first()
+
+    if not active_event:
+        raise HTTPException(status_code=404, detail="Нет активного мероприятия")
+
+    # Считаем общее количество регистраций
+    stmt_total = select(func.count()).select_from(models.Registration).filter(
+        models.Registration.event_id == active_event.id
+    )
+    result_total = await db.execute(stmt_total)
+    total = result_total.scalar() or 0
+
+    # Считаем количество пришедших
+    stmt_arrived = select(func.count()).select_from(models.Registration).filter(
+        models.Registration.event_id == active_event.id,
+        models.Registration.arrival_time.is_not(None)
+    )
+    result_arrived = await db.execute(stmt_arrived)
+    arrived = result_arrived.scalar() or 0
+
+    return schemas.EventStats(
+        event_title=active_event.title,
+        total_registrants=total,
+        arrived_participants=arrived
+    )
+
 @router.post("/events/", response_model=schemas.EventRead)
 async def create_event(
     event: schemas.EventCreate,
@@ -38,21 +77,17 @@ async def create_event(
         stmt_active = select(models.Event).filter(models.Event.registration_active == True)
         result_active = await db.execute(stmt_active)
         existing_active = result_active.scalars().first()
-        
         if existing_active:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail=f"Уже существует активное мероприятие (id={existing_active.id}, title='{existing_active.title}'). "
                        f"Сначала деактивируйте его."
             )
-        
+
     event_data = event.model_dump()
-    if not hasattr(models.Event, "description") and "description" in event_data:
-        del event_data["description"]
-        
     if event_data.get("event_date") and event_data["event_date"].tzinfo is not None:
         event_data["event_date"] = event_data["event_date"].replace(tzinfo=None)
-        
+
     db_event = models.Event(**event_data)
     db.add(db_event)
     await db.commit()
@@ -77,9 +112,8 @@ async def update_event(
         )
         result_active = await db.execute(stmt_active)
         existing_active = result_active.scalars().first()
-        
         if existing_active:
-             raise HTTPException(
+            raise HTTPException(
                 status_code=400,
                 detail=f"Уже существует активное мероприятие (id={existing_active.id}). "
                        f"Сначала деактивируйте его."
@@ -113,7 +147,7 @@ async def delete_event(
     event = await db.get(models.Event, event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Мероприятие не найдено")
-        
+    
     await db.delete(event)
     await db.commit()
     return None

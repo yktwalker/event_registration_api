@@ -54,7 +54,7 @@ class ParticipantUpdate(BaseModel):
 class ParticipantRead(ParticipantBase):
     id: int
     # Список справочников, в которых состоит участник
-    directories: List[DirectoryLink] = [] 
+    directories: List[DirectoryLink] = []
     model_config = ConfigDict(from_attributes=True)
 
 class EventBase(BaseModel):
@@ -78,6 +78,12 @@ class EventUpdate(BaseModel):
 class EventRead(EventBase):
     id: int
     model_config = ConfigDict(from_attributes=True)
+
+# --- Event Statistics Schema ---
+class EventStats(BaseModel):
+    event_title: str
+    total_registrants: int
+    arrived_participants: int
 
 class DirectoryBase(BaseModel):
     name: str
@@ -122,7 +128,6 @@ class ParticipantStatus(ParticipantRead):
     model_config = ConfigDict(from_attributes=True)
 
 # --- Схемы для синхронизации ---
-
 class SyncRequest(BaseModel):
     last_sync_time: Optional[datetime] = None
     known_registration_ids: Optional[List[int]] = None

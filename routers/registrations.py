@@ -1,7 +1,10 @@
 import json
+import io
 from typing import List, Optional
 from datetime import datetime, timezone, UTC
+
 from fastapi import APIRouter, Depends, HTTPException, Body, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import joinedload, selectinload
@@ -23,6 +26,7 @@ async def sync_registrations(
     current_user: models.SystemUser = Depends(get_current_registrar_or_admin),
 ):
     server_time = datetime.now(UTC)
+    
     stmt = (
         select(models.Registration)
         .options(joinedload(models.Registration.registered_by))
@@ -101,7 +105,6 @@ async def register_users(
     existing_ids = set(result_existing.scalars().all())
 
     participants_to_register = target_participant_ids - existing_ids
-    
     successful_registrations: list[models.Registration] = []
 
     for p_id in participants_to_register:
@@ -167,16 +170,17 @@ async def set_participant_arrival(
     )
     result = await db.execute(stmt)
     registration = result.scalars().first()
+
     if not registration:
         raise HTTPException(
-            status_code=404, 
+            status_code=404,
             detail="Участник не зарегистрирован на это мероприятие",
-            )
+        )
 
     # ключевая правка: сохраняем наивное UTC-время
     now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
     registration.arrival_time = now_utc_naive
-
+    
     await db.commit()
     await db.refresh(registration)
 
@@ -202,32 +206,24 @@ async def unset_participant_arrival(
         models.Registration.event_id == event_id,
         models.Registration.participant_id == participant_id
     )
-    
     result = await db.execute(stmt)
     registration = result.scalars().first()
 
     if not registration:
         raise HTTPException(status_code=404, detail="Регистрация не найдена.")
 
-    # !!! ВАЖНО: Сохраняем ID до коммита, чтобы избежать ошибки MissingGreenlet
-    # при обращении к expired объекту
     reg_id = registration.id
-
-    # Очищаем поле
     registration.arrival_time = None
-    
     await db.commit()
-
-    # Оповещаем об отмене прибытия
+    
     notify_data = {
         "type": "arrival_update",
-        "registration_id": reg_id, # Используем сохраненную переменную
+        "registration_id": reg_id,
         "participant_id": participant_id,
         "arrival_time": None,
-        "action": "unset"
+        "action": "unset",
     }
     await manager.broadcast(json.dumps(notify_data), event_id)
-    
     return None
 
 @router.delete("/events/{event_id}/participants/{participant_id}", status_code=204)
@@ -257,7 +253,6 @@ async def unregister_participant(
         "participant_id": participant_id,
     }
     await manager.broadcast(json.dumps(notify_data), event_id)
-
     return None
 
 @router.get("/events/{event_id}/participants/", response_model=List[schemas.ParticipantStatus])
@@ -310,7 +305,7 @@ async def get_event_participants(
             models.Directory,
             models.DirectoryMembership.directory_id == models.Directory.id,
         ).filter(models.DirectoryMembership.participant_id.in_(participant_ids))
-
+        
         dirs_result = await db.execute(stmt_dirs)
         dirs_map = {}
         for p_id, d_id, d_name in dirs_result.all():
@@ -405,7 +400,6 @@ async def search_event_registrations(
     participants_status = []
     if rows:
         participant_ids = [row.id for row in rows]
-        
         stmt_dirs = select(
             models.DirectoryMembership.participant_id,
             models.Directory.id.label("dir_id"),
@@ -414,9 +408,8 @@ async def search_event_registrations(
             models.Directory,
             models.DirectoryMembership.directory_id == models.Directory.id,
         ).filter(models.DirectoryMembership.participant_id.in_(participant_ids))
-
-        dirs_result = await db.execute(stmt_dirs)
         
+        dirs_result = await db.execute(stmt_dirs)
         dirs_map = {}
         for p_id, d_id, d_name in dirs_result.all():
             if p_id not in dirs_map:
@@ -439,3 +432,65 @@ async def search_event_registrations(
             participants_status.append(status_obj)
 
     return participants_status
+
+@router.get("/events/{event_id}/stats/file")
+async def download_event_stats_file(
+    event_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: models.SystemUser = Depends(get_current_operator_or_admin),
+):
+    # 1. Получаем мероприятие
+    event = await db.get(models.Event, event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Мероприятие не найдено")
+
+    # 2. Загружаем регистрации с участниками
+    stmt = (
+        select(models.Registration)
+        .options(joinedload(models.Registration.participant))
+        .filter(models.Registration.event_id == event_id)
+    )
+    result = await db.execute(stmt)
+    registrations = result.scalars().all()
+
+    # 3. Сортировка: Сначала пришедшие (по времени), затем непришедшие
+    # Ключ сортировки: (False, дата) для пришедших, (True, None) для отсутствующих
+    sorted_regs = sorted(
+        registrations,
+        key=lambda r: (r.arrival_time is None, r.arrival_time)
+    )
+
+    # 4. Формирование текста
+    output = io.StringIO()
+    output.write(f"Статистика по мероприятию: {event.title}\n")
+    output.write(f"Дата формирования отчета: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+    output.write("-" * 60 + "\n")
+    output.write(f"{'ФИО Участника':<40} | {'Время прихода'}\n")
+    output.write("-" * 60 + "\n")
+
+    arrived_count = 0
+    total_count = len(registrations)
+
+    for reg in sorted_regs:
+        arrival_str = "Не пришел"
+        if reg.arrival_time:
+            arrival_str = reg.arrival_time.strftime("%Y-%m-%d %H:%M:%S")
+            arrived_count += 1
+        
+        output.write(f"{reg.participant.full_name:<40} | {arrival_str}\n")
+
+    output.write("-" * 60 + "\n")
+    output.write(f"ИТОГО ЗАПЛАНИРОВАНО (всего регистраций): {total_count}\n")
+    output.write(f"ИТОГО РЕАЛЬНО ПРИШЛО: {arrived_count}\n")
+    
+    # 5. Подготовка к отправке
+    filename = f"stats_{event_id}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
+    
+    def iterfile():
+        yield output.getvalue().encode("utf-8")
+
+    return StreamingResponse(
+        iterfile(),
+        media_type="text/plain",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
