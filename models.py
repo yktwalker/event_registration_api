@@ -35,6 +35,7 @@ class Event(Base):
         back_populates="event",
         cascade="all, delete-orphan",
     )
+
     logs: Mapped[list["AuditLog"]] = relationship(
         "AuditLog",
         back_populates="event",
@@ -51,13 +52,19 @@ class Participant(Base):
     phone: Mapped[str | None] = mapped_column(String, nullable=True)
     registration_date: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    
     is_checked_in: Mapped[bool] = mapped_column(Boolean, default=False)
 
     event: Mapped["Event | None"] = relationship("Event", back_populates="participants")
-    
+
     directory_memberships: Mapped[list["DirectoryMembership"]] = relationship(
         "DirectoryMembership",
+        back_populates="participant",
+        cascade="all, delete-orphan",
+    )
+
+    # --- ИЗМЕНЕНИЕ: Добавлена связь с каскадным удалением ---
+    registrations: Mapped[list["Registration"]] = relationship(
+        "Registration",
         back_populates="participant",
         cascade="all, delete-orphan",
     )
@@ -67,14 +74,19 @@ class Registration(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     event_id: Mapped[int] = mapped_column(Integer, ForeignKey("events.id"))
-    participant_id: Mapped[int] = mapped_column(Integer, ForeignKey("participants.id"))
-    registered_by_user_id: Mapped[int] = mapped_column(Integer, ForeignKey("system_users.id"))
     
+    # --- ИЗМЕНЕНИЕ: Добавлен ondelete="CASCADE" для уровня БД ---
+    participant_id: Mapped[int] = mapped_column(Integer, ForeignKey("participants.id", ondelete="CASCADE"))
+    
+    registered_by_user_id: Mapped[int] = mapped_column(Integer, ForeignKey("system_users.id"))
     registration_time: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     arrival_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     event: Mapped["Event"] = relationship("Event")
-    participant: Mapped["Participant"] = relationship("Participant")
+    
+    # --- ИЗМЕНЕНИЕ: Добавлен back_populates для двусторонней связи ---
+    participant: Mapped["Participant"] = relationship("Participant", back_populates="registrations")
+    
     registered_by: Mapped["SystemUser"] = relationship("SystemUser")
 
 class AuditLog(Base):
