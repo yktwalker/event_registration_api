@@ -1,0 +1,183 @@
+/* --- 1. ГЛОБАЛЬНЫЙ СБРОС (Для работы скролла на iPad на странице отчета) --- */
+html.report-page { 
+    height: auto; 
+    min-height: 100%; 
+}
+body.report-page {
+    height: auto; 
+    min-height: 100%;
+    overflow-y: auto; 
+    -webkit-overflow-scrolling: touch;
+    margin: 0; 
+    padding-bottom: 50px;
+}
+
+/* Скрываем консоль на странице отчетов */
+body.report-page #system-console {
+    display: none !important;
+}
+
+/* Сброс оберток для страницы отчета */
+body.report-page #main-wrapper, 
+body.report-page .content-wrapper, 
+body.report-page .content-body { 
+    height: auto !important; 
+    overflow: visible !important; 
+}
+
+/* --- 2. DEKSTOP (ПК) --- */
+@media (min-width: 993px) {
+    #report-container {
+        display: grid; 
+        grid-template-columns: 1fr 1fr;
+        grid-template-areas: "title title" "date date" "header-table chart" "table chart" "summary chart" "footer footer";
+        gap: 1rem 2rem; 
+        align-items: start; 
+        max-width: 1400px; 
+        margin: 0 auto; 
+        padding-bottom: 50px;
+    }
+    #report-container .chart-container { 
+        grid-area: chart; 
+        position: sticky; 
+        top: 20px; 
+    }
+    
+    /* Кнопка на ПК - по центру */
+    #report-container .print-btn {
+        justify-self: center;
+        width: auto;
+    }
+}
+
+/* --- 3. ПЛАНШЕТЫ И МОБИЛЬНЫЕ (iPad) --- */
+@media (max-width: 992px) {
+    #report-container {
+        display: block; 
+        width: 100%; 
+        padding: 15px; 
+        padding-bottom: 150px;
+    }
+    #report-container .chart-container {
+        display: block; 
+        width: 100%; 
+        margin-bottom: 30px; 
+        position: static !important;
+    }
+    #report-container table { 
+        margin-bottom: 20px; 
+    }
+    
+    /* ИСПРАВЛЕНИЕ КНОПКИ НА IPAD */
+    #report-container .print-btn {
+        display: block;          
+        width: fit-content;      
+        min-width: 200px;        
+        margin: 30px auto 50px auto; 
+    }
+    
+    #report-container h1, #report-container .date { 
+        text-align: center; 
+    }
+}
+
+/* Общие стили */
+#report-container { 
+    padding: 20px; 
+    background: #fff; 
+}
+#report-container h1 { grid-area: title; margin-bottom: 0.5rem; }
+#report-container .date { grid-area: date; margin-bottom: 2rem; color: #666; }
+#report-container h2:first-of-type { grid-area: header-table; margin-top: 0; }
+#report-container table { grid-area: table; width: 100%; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+#report-container .summary { 
+    grid-area: summary; 
+    background: #f8f9fa; 
+    padding: 1.5rem; 
+    border-radius: 8px; 
+    margin-top: 1rem; 
+}
+#report-container .print-btn { grid-area: footer; }
+
+/* --- 4. ПЕЧАТЬ (Вмещаем в 1 страницу) --- */
+@media print {
+    @page { 
+        size: landscape; 
+        margin: 5mm; 
+    }
+    
+    header, .top-navbar, .nav-left, .nav-right, #system-console, .print-btn, .main-menu, .user-section, footer { 
+        display: none !important; 
+    }
+    html, body { 
+        height: auto !important; 
+        margin: 0 !important; 
+        padding: 0 !important; 
+        overflow: visible !important; 
+    }
+
+    /* МАСШТАБИРОВАНИЕ ДЛЯ ПЕЧАТИ (95%) */
+    body {
+        transform: scale(0.95); 
+        transform-origin: top center;
+        width: 105%; 
+    }
+
+    #report-container {
+        display: grid !important;
+        grid-template-columns: 42% 56% !important; 
+        grid-template-rows: auto auto auto auto !important;
+        grid-template-areas: 
+            "title title"
+            "date date"
+            "chart header-table"
+            "chart table"
+            "chart summary"
+            "footer footer" !important;
+        gap: 10px !important; 
+        width: 100% !important; 
+        margin: 0 !important; 
+        padding: 0 !important; 
+        border: none !important; 
+        box-shadow: none !important;
+    }
+
+    #report-container .chart-container {
+        grid-area: chart !important; 
+        display: block !important; 
+        position: static !important; 
+        width: 100% !important; 
+        border: none !important; 
+        padding: 0 !important; 
+        margin: 0 !important; 
+        page-break-inside: avoid;
+    }
+    
+    #report-container .chart-container canvas { 
+        max-height: 380px !important; 
+        width: 100% !important; 
+    }
+
+    #report-container table { 
+        grid-area: table !important; 
+        width: 100% !important; 
+        font-size: 8pt !important; 
+        border: 1px solid #eee !important; 
+        margin-bottom: 0 !important;
+    }
+    
+    #report-container h1 { font-size: 16pt !important; margin-bottom: 5px !important; }
+    #report-container .date { margin-bottom: 10px !important; font-size: 10pt !important; }
+    #report-container h2:first-of-type { font-size: 12pt !important; margin-top: 0 !important; }
+    
+    #report-container .summary {
+        grid-area: summary !important; 
+        margin-top: 5px !important; 
+        padding: 8px !important; 
+        border: 1px solid #eee !important; 
+        background: none !important; 
+        font-size: 9pt !important;
+    }
+
+    tr { page-break-inside: avoid; }
+}

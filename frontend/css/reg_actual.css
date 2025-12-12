@@ -1,0 +1,5 @@
+/* reg_actual.css */
+.event-banner-actual { background-color: #d1e7dd; border-color: #badbcc; margin-bottom: 1rem; }
+.event-banner-actual .status-badge { background-color: #f8f9fa; color: #198754; border: 1px solid #dee2e6; cursor: pointer; user-select: none; padding: 0.35em 0.65em; border-radius: 0.25rem; font-weight: 700; font-size: 0.75em; }
+.event-banner-actual .counter-box { border-color: #a3cfbb; }
+.event-banner-actual .counter-value { color: #157347; }

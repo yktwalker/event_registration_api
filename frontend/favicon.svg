@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Черный квадрат со скругленными углами -->
+  <rect x="0" y="0" width="64" height="64" rx="12" ry="12" fill="#000000" />
+  
+  <!-- Зеленая галочка -->
+  <!-- fill="none" - без заливки, только линия -->
+  <!-- stroke - цвет линии -->
+  <!-- stroke-width - толщина линии -->
+  <!-- stroke-linecap - скругленные концы линий -->
+  <path d="M16 32 L28 44 L48 20" 
+        fill="none" 
+        stroke="#4ade80" 
+        stroke-width="8" 
+        stroke-linecap="round" 
+        stroke-linejoin="round"/>
+</svg>

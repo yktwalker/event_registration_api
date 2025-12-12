@@ -1,0 +1,5 @@
+/* reg_planned.css */
+.event-banner-planned { background-color: #cff4fc; border-color: #b6effb; margin-bottom: 1.5rem; }
+.event-banner-planned .status-badge { background-color: #fff; color: #0dcaf0; border: 1px solid #b6effb; padding: 0.35em 0.65em; border-radius: 0.25rem; font-weight: 700; font-size: 0.75em; }
+.event-banner-planned .counter-box { background-color: #fff; border-color: #b6effb; box-shadow: 0 .125rem .25rem rgba(0,0,0,.075); }
+.event-banner-planned .counter-value { color: #0dcaf0; }

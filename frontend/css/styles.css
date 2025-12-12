@@ -1,0 +1,126 @@
+/* GLOBAL STYLES */
+body {
+    background-color: #f8f9fa;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    height: 100vh;
+    overflow: hidden;
+    margin: 0;
+}
+
+/* LAYOUT STRUCTURE */
+#main-wrapper {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+/* TOP NAVBAR */
+.top-navbar {
+    background-color: #fff;
+    border-bottom: 1px solid #dee2e6;
+    padding: 0 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    height: 60px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+    z-index: 1000;
+    flex-shrink: 0;
+}
+
+.nav-left { display: flex; align-items: center; gap: 1rem; }
+.nav-link-main { font-weight: 600; text-decoration: none; color: #0d6efd; font-size: 1.1rem; }
+.nav-link-main:hover { color: #0a58ca; }
+.nav-text-separator { width: 1px; height: 20px; background-color: #ccc; display: inline-block; }
+
+.nav-right { display: flex; align-items: center; gap: 2rem; }
+
+/* MAIN MENU */
+.main-menu { display: flex; gap: 1.5rem; }
+.menu-item { text-decoration: none; color: #495057; font-weight: 500; font-size: 0.95rem; }
+.menu-item:hover, .menu-item.active { color: #212529; font-weight: 700; }
+.menu-item.active { border-bottom: 2px solid #0d6efd; }
+
+/* USER SECTION */
+.user-section { display: flex; align-items: center; gap: 1rem; font-size: 0.9rem; }
+.user-info { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.2; }
+#user-display-name { font-weight: 600; color: #333; }
+.role-badge { font-size: 0.75rem; padding: 0.1rem 0.4rem; border-radius: 4px; background-color: #e9ecef; color: #666; }
+.btn-logout { color: #dc3545; text-decoration: none; border: 1px solid #dc3545; padding: 0.2rem 0.6rem; border-radius: 4px; transition: all 0.2s; }
+.btn-logout:hover { background-color: #dc3545; color: #fff; }
+
+/* CONTENT WRAPPER */
+.content-wrapper {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 1rem 1.5rem;
+    width: 100%;
+    overflow: hidden;
+}
+
+/* --- REGISTRAR UI SPECIFIC --- */
+
+/* Counter Styles */
+.counter-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(255, 255, 255, 0.6);
+    padding: 0.25rem 1rem;
+    border-radius: 8px;
+    white-space: nowrap; /* Запрет переноса */
+    min-width: 140px; /* Минимальная ширина чтобы не скакало */
+}
+
+#arrival-counter {
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 2.2rem; /* Крупный шрифт */
+    font-weight: 800;
+    line-height: 1;
+    color: #157347; /* text-success-dark */
+    letter-spacing: 1px;
+    margin: 0;
+}
+
+/* Table Scroll Container */
+.table-scroll-container {
+    height: 400px; /* ~5 строк */
+    overflow-y: auto;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    background: #fff;
+}
+
+.table-scroll-container thead th {
+    position: sticky;
+    top: 0;
+    background-color: #f8f9fa;
+    z-index: 10;
+    box-shadow: 0 2px 2px -1px rgba(0, 0, 0, 0.1);
+    padding: 1rem;
+}
+
+.table tr td {
+    padding: 12px 15px;
+    font-size: 1.05rem;
+    vertical-align: middle;
+}
+
+/* SYSTEM CONSOLE (FOOTER) */
+#system-console {
+    margin-top: auto;
+    padding: 0 1rem;
+    background-color: #212529;
+    color: #4ade80;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 1rem;
+    border-top: 1px solid #444;
+    display: flex;
+    align-items: center;
+    height: 50px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
