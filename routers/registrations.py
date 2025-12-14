@@ -1,7 +1,7 @@
 import json
 import io
 from typing import List, Optional
-from datetime import datetime, timezone, UTC
+from datetime import datetime, timezone, UTC, timedelta  # <-- Добавлено timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Body, Query
 from fastapi.responses import StreamingResponse
@@ -16,7 +16,7 @@ from database import get_db
 from dependencies import (
     get_current_registrar_or_admin, 
     get_current_operator_or_admin,
-    get_current_admin  # <-- Добавлено get_current_admin
+    get_current_admin  # <-- Добавлено
 )
 from manager import manager
 
@@ -445,7 +445,6 @@ async def search_event_registrations(
 
     return participants_status
 
-# --- НОВАЯ ФУНКЦИЯ ДЛЯ СБРОСА ---
 @router.post("/events/active/arrivals/reset", status_code=204)
 async def reset_active_event_arrivals(
     db: AsyncSession = Depends(get_db),
@@ -483,11 +482,11 @@ async def reset_active_event_arrivals(
     await manager.broadcast(json.dumps(notify_data), active_event.id)
     
     return None
-# -------------------------------
 
 @router.get("/events/{event_id}/stats/file")
 async def download_event_stats_file(
     event_id: int,
+    utc_offset: int = Query(0, description="Смещение часового пояса в часах (например, 9 для UTC+9)"),
     db: AsyncSession = Depends(get_db),
     current_user: models.SystemUser = Depends(get_current_operator_or_admin),
 ):
@@ -496,12 +495,23 @@ async def download_event_stats_file(
     if not event:
         raise HTTPException(status_code=404, detail="Мероприятие не найдено")
 
-    # 2. Загружаем регистрации с участниками
+    # 2. Загружаем регистрации со всеми связями:
+    # - participant (Участник)
+    #   - directory_memberships -> directory (Справочники участника)
+    # - registered_by (Кто зарегистрировал)
     stmt = (
         select(models.Registration)
-        .options(joinedload(models.Registration.participant))
+        .options(
+            # Загружаем участника и вложенные справочники
+            selectinload(models.Registration.participant)
+            .selectinload(models.Participant.directory_memberships)
+            .joinedload(models.DirectoryMembership.directory),
+            # Загружаем регистратора
+            joinedload(models.Registration.registered_by)
+        )
         .filter(models.Registration.event_id == event_id)
     )
+    
     result = await db.execute(stmt)
     registrations = result.scalars().all()
 
@@ -512,37 +522,104 @@ async def download_event_stats_file(
         key=lambda r: (r.arrival_time is None, r.arrival_time)
     )
 
-    # 4. Формирование текста
-    output = io.StringIO()
-    output.write(f"Статистика по мероприятию: {event.title}\n")
-    output.write(f"Дата формирования отчета: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
-    output.write("-" * 60 + "\n")
-    output.write(f"{'ФИО Участника':<40} | {'Время прихода'}\n")
-    output.write("-" * 60 + "\n")
+    # 4. Формирование HTML
+    # Определение знака смещения для заголовка
+    offset_str = f"UTC+{utc_offset}" if utc_offset >= 0 else f"UTC{utc_offset}"
+    current_time = datetime.now(timezone.utc) + timedelta(hours=utc_offset)
+    
+    html_content = io.StringIO()
+    html_content.write(f"""
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <title>Статистика: {event.title}</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 20px; }}
+            h2 {{ color: #333; }}
+            .meta {{ color: #666; font-size: 0.9em; margin-bottom: 20px; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+            th {{ background-color: #f2f2f2; font-weight: bold; }}
+            tr:nth-child(even) {{ background-color: #f9f9f9; }}
+            .arrived {{ color: green; font-weight: bold; }}
+            .not-arrived {{ color: #999; font-style: italic; }}
+            .small-text {{ font-size: 0.85em; color: #555; }}
+        </style>
+    </head>
+    <body>
+        <h2>Статистика: {event.title}</h2>
+        <div class="meta">
+            Дата формирования: {current_time.strftime('%Y-%m-%d %H:%M')} ({offset_str})<br>
+            Всего регистраций: {len(registrations)}
+        </div>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th>ФИО Участника</th>
+                    <th>Дата прибытия ({offset_str})</th>
+                    <th>Регистратор / Справочник</th>
+                </tr>
+            </thead>
+            <tbody>
+    """)
 
     arrived_count = 0
-    total_count = len(registrations)
-
+    
     for reg in sorted_regs:
-        arrival_str = "Не пришел"
+        # Обработка времени прибытия
         if reg.arrival_time:
-            arrival_str = reg.arrival_time.strftime("%Y-%m-%d %H:%M:%S")
+            # БД хранит naive UTC, добавляем смещение
+            local_arrival = reg.arrival_time + timedelta(hours=utc_offset)
+            arrival_str = f'<span class="arrived">{local_arrival.strftime("%Y-%m-%d %H:%M:%S")}</span>'
             arrived_count += 1
-        
-        output.write(f"{reg.participant.full_name:<40} | {arrival_str}\n")
+        else:
+            arrival_str = '<span class="not-arrived">Не пришел</span>'
 
-    output.write("-" * 60 + "\n")
-    output.write(f"ИТОГО ЗАПЛАНИРОВАНО (всего регистраций): {total_count}\n")
-    output.write(f"ИТОГО РЕАЛЬНО ПРИШЛО: {arrived_count}\n")
+        # Обработка регистратора
+        registrar_name = reg.registered_by.full_name if reg.registered_by else "Система/Неизвестно"
+        
+        # Обработка справочников (их может быть несколько)
+        dir_names = []
+        if reg.participant.directory_memberships:
+            for m in reg.participant.directory_memberships:
+                if m.directory:
+                    dir_names.append(m.directory.name)
+        
+        dirs_str = ", ".join(dir_names) if dir_names else "—"
+
+        html_content.write(f"""
+            <tr>
+                <td>{reg.participant.full_name}</td>
+                <td>{arrival_str}</td>
+                <td>
+                    {registrar_name}<br>
+                    <span class="small-text">Справочник: {dirs_str}</span>
+                </td>
+            </tr>
+        """)
+
+    html_content.write(f"""
+            </tbody>
+        </table>
+        <p><strong>Итого реально пришло: {arrived_count}</strong></p>
+    </body>
+    </html>
+    """)
 
     # 5. Подготовка к отправке
-    filename = f"stats_{event_id}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
+    filename = f"stats_{event_id}_{current_time.strftime('%Y%m%d_%H%M')}.html"
 
-    def iterfile():
-        yield output.getvalue().encode("utf-8")
+    # Сбрасываем указатель в начало буфера
+    html_content.seek(0)
+
+    # Используем async generator для StreamingResponse
+    async def iterfile():
+        yield html_content.read().encode("utf-8")
 
     return StreamingResponse(
         iterfile(),
-        media_type="text/plain",
+        media_type="text/html",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
