@@ -19,7 +19,7 @@ async def registrar_token(client: AsyncClient, db_session: AsyncSession):
     )
     db_session.add(user)
     await db_session.commit()
-    
+
     resp = await client.post("/token", data={"username": "registrar", "password": "registrar"})
     assert resp.status_code == 200
     return resp.json()["access_token"]
@@ -35,8 +35,24 @@ async def operator_token(client: AsyncClient, db_session: AsyncSession):
     )
     db_session.add(user)
     await db_session.commit()
-    
+
     resp = await client.post("/token", data={"username": "operator", "password": "operator"})
+    assert resp.status_code == 200
+    return resp.json()["access_token"]
+
+@pytest_asyncio.fixture
+async def admin_token(client: AsyncClient, db_session: AsyncSession):
+    """Создает пользователя-админа и возвращает его токен."""
+    user = SystemUser(
+        username="admin_user",
+        role=SystemUserRole.ADMIN,
+        hashed_password=get_password_hash("admin"),
+        full_name="Admin User"
+    )
+    db_session.add(user)
+    await db_session.commit()
+
+    resp = await client.post("/token", data={"username": "admin_user", "password": "admin"})
     assert resp.status_code == 200
     return resp.json()["access_token"]
 
@@ -51,7 +67,7 @@ async def setup_event_and_participant(db_session: AsyncSession):
         registration_active=True
     )
     db_session.add(event)
-    
+
     # 2. Создаем участника
     participant = Participant(
         full_name="John Doe",
@@ -59,7 +75,6 @@ async def setup_event_and_participant(db_session: AsyncSession):
         note="Test note"
     )
     db_session.add(participant)
-    
     await db_session.commit()
     await db_session.refresh(event)
     await db_session.refresh(participant)
@@ -70,8 +85,8 @@ async def setup_event_and_participant(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_registration_permissions(
-    client: AsyncClient, 
-    registrar_token: str, 
+    client: AsyncClient,
+    registrar_token: str,
     operator_token: str,
     setup_event_and_participant
 ):
@@ -81,12 +96,12 @@ async def test_registration_permissions(
     - Оператор МОЖЕТ создавать регистрации (план).
     """
     event, participant = setup_event_and_participant
-    
+
     # 1. Попытка Регистратора создать регистрацию (должен получить 403)
     headers_reg = {"Authorization": f"Bearer {registrar_token}"}
     resp_fail = await client.post(
-        f"/events/{event.id}/register/", 
-        json={"participant_ids": [participant.id]}, 
+        f"/events/{event.id}/register/",
+        json={"participant_ids": [participant.id]},
         headers=headers_reg
     )
     assert resp_fail.status_code == 403, "Регистратор не должен иметь прав на создание заявки"
@@ -94,8 +109,8 @@ async def test_registration_permissions(
     # 2. Попытка Оператора создать регистрацию (должен получить 200)
     headers_op = {"Authorization": f"Bearer {operator_token}"}
     resp_ok = await client.post(
-        f"/events/{event.id}/register/", 
-        json={"participant_ids": [participant.id]}, 
+        f"/events/{event.id}/register/",
+        json={"participant_ids": [participant.id]},
         headers=headers_op
     )
     assert resp_ok.status_code == 200, "Оператор должен успешно создать заявку"
@@ -106,8 +121,8 @@ async def test_registration_permissions(
 
 @pytest.mark.asyncio
 async def test_arrival_workflow(
-    client: AsyncClient, 
-    registrar_token: str, 
+    client: AsyncClient,
+    registrar_token: str,
     operator_token: str,
     setup_event_and_participant
 ):
@@ -122,8 +137,8 @@ async def test_arrival_workflow(
 
     # 1. Сначала Оператор региструет участника (создает План)
     await client.post(
-        f"/events/{event.id}/register/", 
-        json={"participant_ids": [participant.id]}, 
+        f"/events/{event.id}/register/",
+        json={"participant_ids": [participant.id]},
         headers=headers_op
     )
 
@@ -135,7 +150,7 @@ async def test_arrival_workflow(
     assert resp_arrive.status_code == 200
     data = resp_arrive.json()
     assert data["arrival_time"] is not None
-    assert "T" in data["arrival_time"] # Проверка формата времени ISO
+    assert "T" in data["arrival_time"]  # Проверка формата времени ISO
 
     # 3. Проверяем через поиск, что время действительно стоит
     resp_search = await client.get(
@@ -164,8 +179,8 @@ async def test_arrival_workflow(
 
 @pytest.mark.asyncio
 async def test_arrival_errors(
-    client: AsyncClient, 
-    registrar_token: str, 
+    client: AsyncClient,
+    registrar_token: str,
     setup_event_and_participant
 ):
     """Проверка ошибок при простановке прибытия."""
@@ -180,4 +195,26 @@ async def test_arrival_errors(
     )
     assert resp_fail.status_code == 404
     assert "не зарегистрирован" in resp_fail.json()["detail"]
+
+@pytest.mark.asyncio
+async def test_reset_active_event_arrivals(
+    client: AsyncClient,
+    admin_token: str,
+    operator_token: str,
+    registrar_token: str,
+    setup_event_and_participant
+):
+    """
+    Проверяем массовый сброс отметок прибытия:
+    1. Создаем регистрации и ставим отметки прибытия.
+    2. Проверяем, что Оператор/Регистратор НЕ могут сбросить (403).
+    3. Проверяем, что Админ МОЖЕТ сбросить (204).
+    4. Проверяем, что отметки действительно исчезли.
+    """
+    event, participant = setup_event_and_participant
     
+    headers_op = {"Authorization": f"Bearer {operator_token}"}
+    headers_reg = {"Authorization": f"Bearer {registrar_token}"}
+    headers_admin = {"Authorization": f"Bearer {admin_token}"}
+
+    # 1. Оператор регистрирует участника

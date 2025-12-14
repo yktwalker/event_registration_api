@@ -8,12 +8,16 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import joinedload, selectinload
-from sqlalchemy import and_, or_, desc, asc, nulls_last
+from sqlalchemy import and_, or_, desc, asc, nulls_last, update  # <-- Добавлено update
 
 import models
 import schemas
 from database import get_db
-from dependencies import get_current_registrar_or_admin, get_current_operator_or_admin
+from dependencies import (
+    get_current_registrar_or_admin, 
+    get_current_operator_or_admin,
+    get_current_admin  # <-- Добавлено get_current_admin
+)
 from manager import manager
 
 router = APIRouter()
@@ -27,7 +31,7 @@ async def sync_registrations(
 ):
     # 1. Генерируем "наивное" время UTC для работы с БД (чтобы не было ошибки offset-naive vs aware)
     server_time_naive = datetime.now(timezone.utc).replace(tzinfo=None)
-    
+
     # 2. Формируем запрос с selectinload для избежания MissingGreenlet при валидации
     stmt = (
         select(models.Registration)
@@ -42,7 +46,7 @@ async def sync_registrations(
         if last_sync.tzinfo:
             last_sync = last_sync.astimezone(timezone.utc).replace(tzinfo=None)
         conditions.append(models.Registration.registration_time > last_sync)
-    
+
     if sync_req.known_registration_ids:
         # Убедимся, что передали не пустой список, иначе not_in может вести себя странно в некоторых версиях
         ids = sync_req.known_registration_ids
@@ -132,22 +136,20 @@ async def register_users(
     response_data: list[dict] = []
     for reg in successful_registrations:
         await db.refresh(reg)
-        response_data.append(
-            {
-                "id": reg.id,
-                "event_id": reg.event_id,
-                "participant_id": reg.participant_id,
-                "registered_by_user_id": reg.registered_by_user_id,
-                "registration_time": reg.registration_time,
-                "arrival_time": reg.arrival_time,
-                "registered_by": {
-                    "id": reg_user_id,
-                    "username": reg_username,
-                    "full_name": reg_fullname,
-                    "role": reg_role,
-                },
-            }
-        )
+        response_data.append({
+            "id": reg.id,
+            "event_id": reg.event_id,
+            "participant_id": reg.participant_id,
+            "registered_by_user_id": reg.registered_by_user_id,
+            "registration_time": reg.registration_time,
+            "arrival_time": reg.arrival_time,
+            "registered_by": {
+                "id": reg_user_id,
+                "username": reg_username,
+                "full_name": reg_fullname,
+                "role": reg_role,
+            },
+        })
 
     if successful_registrations:
         notify_data = {
@@ -223,7 +225,7 @@ async def unset_participant_arrival(
     reg_id = registration.id
     registration.arrival_time = None
     await db.commit()
-    
+
     notify_data = {
         "type": "arrival_update",
         "registration_id": reg_id,
@@ -232,6 +234,7 @@ async def unset_participant_arrival(
         "action": "unset",
     }
     await manager.broadcast(json.dumps(notify_data), event_id)
+
     return None
 
 @router.delete("/events/{event_id}/participants/{participant_id}", status_code=204)
@@ -261,6 +264,7 @@ async def unregister_participant(
         "participant_id": participant_id,
     }
     await manager.broadcast(json.dumps(notify_data), event_id)
+
     return None
 
 @router.get("/events/{event_id}/participants/", response_model=List[schemas.ParticipantStatus])
@@ -441,6 +445,46 @@ async def search_event_registrations(
 
     return participants_status
 
+# --- НОВАЯ ФУНКЦИЯ ДЛЯ СБРОСА ---
+@router.post("/events/active/arrivals/reset", status_code=204)
+async def reset_active_event_arrivals(
+    db: AsyncSession = Depends(get_db),
+    current_user: models.SystemUser = Depends(get_current_admin),
+):
+    """
+    Сброс всех отметок прибытия (arrival_time) для текущего активного мероприятия.
+    Доступно только для роли Admin.
+    """
+    # 1. Находим активное мероприятие
+    stmt_active = select(models.Event).filter(models.Event.registration_active == True)
+    result_active = await db.execute(stmt_active)
+    active_event = result_active.scalars().first()
+
+    if not active_event:
+        raise HTTPException(status_code=404, detail="Нет активного мероприятия.")
+
+    # 2. Выполняем массовое обновление (Bulk Update)
+    stmt_update = (
+        update(models.Registration)
+        .where(models.Registration.event_id == active_event.id)
+        .where(models.Registration.arrival_time.is_not(None))
+        .values(arrival_time=None)
+    )
+    
+    await db.execute(stmt_update)
+    await db.commit()
+
+    # 3. Отправляем уведомление через WebSocket
+    notify_data = {
+        "type": "arrivals_reset",
+        "event_id": active_event.id,
+        "action": "reset_all"
+    }
+    await manager.broadcast(json.dumps(notify_data), active_event.id)
+    
+    return None
+# -------------------------------
+
 @router.get("/events/{event_id}/stats/file")
 async def download_event_stats_file(
     event_id: int,
@@ -490,10 +534,10 @@ async def download_event_stats_file(
     output.write("-" * 60 + "\n")
     output.write(f"ИТОГО ЗАПЛАНИРОВАНО (всего регистраций): {total_count}\n")
     output.write(f"ИТОГО РЕАЛЬНО ПРИШЛО: {arrived_count}\n")
-    
+
     # 5. Подготовка к отправке
     filename = f"stats_{event_id}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
-    
+
     def iterfile():
         yield output.getvalue().encode("utf-8")
 
